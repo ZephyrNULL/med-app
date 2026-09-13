@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Care Cube — Building the Circuit in Cirkit Designer</title>
+<style>
+  @page { size: Letter; margin: 16mm 15mm 18mm 15mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", "DejaVu Sans", Roboto, Arial, sans-serif;
+    font-size: 10.5pt; line-height: 1.5; color: #1d2a28; margin: 0;
+  }
+  h1 { font-size: 24pt; color: #0F766E; margin: 0 0 6px 0; }
+  h2 {
+    font-size: 15pt; color: #0F766E;
+    border-bottom: 2px solid #0F766E; padding-bottom: 4px;
+    margin: 24px 0 10px 0;
+  }
+  h3 { font-size: 12pt; color: #14532d; margin: 18px 0 6px 0; }
+  p { margin: 6px 0; }
+  ul, ol { margin: 6px 0 10px 0; padding-left: 22px; }
+  li { margin: 3px 0; }
+  table {
+    border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 9.5pt;
+  }
+  th, td { border: 1px solid #b9c6c3; padding: 5px 7px; text-align: left; vertical-align: top; }
+  th { background: #0F766E; color: #fff; font-weight: 600; }
+  tr:nth-child(even) td { background: #f1f5f4; }
+  code, pre { font-family: "Consolas", "Cascadia Mono", monospace; }
+  code { background: #eef4f3; padding: 1px 4px; border-radius: 3px; font-size: 9pt; }
+  pre {
+    background: #f4f6f5; border: 1px solid #d8e0de; border-radius: 6px;
+    padding: 10px 12px; font-size: 8.5pt; line-height: 1.35; overflow-x: auto;
+    white-space: pre;
+  }
+  .cover { text-align: center; padding-top: 90px; }
+  .cover .sub { font-size: 13pt; color: #4b5c59; margin-top: 10px; }
+  .cover .meta { font-size: 10pt; color: #6b7a77; margin-top: 40px; }
+  .cover .badge {
+    display: inline-block; background: #0F766E; color: #fff;
+    padding: 6px 16px; border-radius: 20px; font-size: 11pt; margin-top: 18px;
+  }
+  .callout {
+    border-left: 4px solid #0F766E; background: #f1f5f4;
+    padding: 8px 12px; margin: 12px 0; border-radius: 0 6px 6px 0;
+  }
+  .warn {
+    border-left: 4px solid #d97706; background: #fffbeb;
+    padding: 8px 12px; margin: 12px 0; border-radius: 0 6px 6px 0;
+  }
+  .pagebreak { page-break-before: always; }
+  .small { font-size: 8.5pt; color: #5c6b68; }
+  .ok { color: #0F766E; font-weight: 700; }
+  .net { font-weight: 700; color: #b45309; }
+  table.slim td, table.slim th { padding: 3px 6px; }
+  .check li { list-style: none; margin: 4px 0; }
+  .check li::before { content: "\2610  "; color: #0F766E; font-weight: 700; }
+</style>
+</head>
+<body>
+
+<!-- ============================ COVER ============================ -->
+<div class="cover">
+  <h1>CARE CUBE</h1>
+  <div class="badge">Espresso Maker… never mind — Med Tech</div>
+  <div class="sub">Building the Care Cube Circuit in Cirkit Designer (ESP32-S3 Simulator)</div>
+  <div class="sub">Full-replica build + live temperature/humidity streaming to the Care Cube mobile app</div>
+  <div class="meta">
+    Platform: Cirkit Designer &mdash; <code>app.cirkitdesigner.com</code><br>
+    Target board: ESP32-S3 (simulated)<br>
+    Companion code: <code>cirkit/sketch.ino</code><br>
+    Repo: <code>care_cube</code><br>
+    Estimated build time: 15&ndash;25 minutes
+  </div>
+</div>
+
+<div class="pagebreak"></div>
+
+<!-- ============================ 1. OVERVIEW ============================ -->
+<h2>1. Overview</h2>
+<p>This guide builds a complete, simulated copy of the Care Cube medicine box
+inside Cirkit Designer and connects it to the <b>same MQTT broker</b> the Care
+Cube mobile app uses, so real sensor values appear on your phone.</p>
+
+<h3>What you will have when finished</h3>
+<ul>
+  <li>An ESP32-S3 running the Care Cube firmware (simulated).</li>
+  <li>DHT22 temperature/humidity readings published every 30 seconds to
+      HiveMQ Cloud topic <code>carecube/carecube-001/status</code>.</li>
+  <li>Dose reminders at 08:00, 10:00, 12:00, 14:00, 16:00 and 20:00 that turn
+      on an LED + buzzer and publish events on <code>carecube/carecube-001/event</code>.</li>
+  <li>Schedule changes pushed from the app arriving on
+      <code>carecube/carecube-001/schedule/set</code>.</li>
+  <li>The temperature and humidity cards on the phone app updating live.</li>
+</ul>
+
+<h3>Prerequisites</h3>
+<ul>
+  <li>A desktop browser (Chrome or Edge recommended) with internet access.</li>
+  <li>A free Cirkit Designer account (Sign In at <code>app.cirkitdesigner.com</code>).</li>
+  <li>The firmware file <code>cirkit/sketch.ino</code> from the repository
+      (Chapter 8 of this guide).</li>
+  <li>(Optional but recommended) the Care Cube app installed on a phone for
+      the end-to-end verification in Chapter 10.</li>
+</ul>
+
+<div class="callout">
+  <b>Important:</b> Cirkit Designer does <u>not</u> support importing a circuit
+  from a file. The workspace is cloud-based and each project lives at
+  <code>app.cirkitdesigner.com/project/&lt;uuid&gt;</code>. You build the
+  circuit once, manually, inside the browser using the steps below.
+</div>
+
+<!-- ============================ 2. CREATE PROJECT ============================ -->
+<h2>2. Create the project</h2>
+<ol>
+  <li>Open <code>https://app.cirkitdesigner.com</code> in your browser.</li>
+  <li>Make sure you are signed in (top-right corner: <b>Sign in</b> / <b>Sign up</b>).</li>
+  <li>Click <b>Start a new circuit project</b> (blank project).</li>
+  <li>A new empty workspace opens. The left panel is the <b>Parts</b> library,
+      the center is the <b>canvas</b>, and the top-right area has the
+      <b>Design / Code / Simulate / Upload</b> tabs.</li>
+</ol>
+
+<div class="warn">
+  This simulator supports the <b>ESP32-S3</b> (Simulation Features table shows
+  the S3 — not the plain ESP32). Every next step in this guide assumes the
+  ESP32-S3 dev board.
+</div>
+
+<!-- ============================ 3. PARTS ============================ -->
+<h2>3. Parts to place on the canvas</h2>
+<p>Search each name in the Parts panel, then drag it onto the canvas. You can
+rotate a part (selection toolbar) and zoom with <code>Ctrl + wheel</code>.</p>
+
+<table>
+  <tr><th style="width:34%">Part</th><th style="width:8%">Qty</th><th>Search / notes</th></tr>
+  <tr><td>ESP32-S3 Dev Board</td><td>1</td><td>Search <code>ESP32 S3</code>. This is your main board; everything else wires into it.</td></tr>
+  <tr><td>DHT22 (temperature &amp; humidity)</td><td>1</td><td>Search <code>DHT22</code>. 4-pin breakout: VCC, DATA, NC?, GND.</td></tr>
+  <tr><td>LCD 20&times;4 with I2C</td><td>1</td><td>Search <code>LCD 2004 I2C</code> (or <code>20x4 LCD</code>). I2C backpack makes it a 4-pin part: VCC, GND, SDA, SCL.</td></tr>
+  <tr><td>DS1307 RTC</td><td>1</td><td>Search <code>DS1307</code>. I2C real-time clock (the firmware falls back to the sim clock if this is missing).</td></tr>
+  <tr><td>Buzzer</td><td>1</td><td>Search <code>buzzer</code> (piezo, 2 pins: + and &ndash;).</td></tr>
+  <tr><td>LED</td><td>7</td><td>Any LEDs. Recommended colors in order: red, orange, yellow, green, blue, purple, red.</td></tr>
+  <tr><td>VL53L0X (time-of-flight distance sensor)</td><td>7</td><td>Search <code>VL53L0X</code>. 4-pin breakout: VIN, GND, SDA, SCL, plus an XSHUT pin.</td></tr>
+</table>
+
+<h3>Part list at a glance</h3>
+<pre>
+1x ESP32-S3 Dev Board
+1x DHT22                       temperature & humidity
+1x LCD 20x4 (I2C backpack)     display
+1x DS1307 RTC                  real-time clock
+1x Buzzer                      audio alarm
+7x LED                         bay indicator lights
+7x VL53L0X                     distance sensors (medicine bays)
+----------------------------------------------
+22 parts total
+</pre>
+
+<!-- ============================ 4. BOARD PIN MAP ============================ -->
+<div class="pagebreak"></div>
+<h2>4. ESP32-S3 pin assignments (functional map)</h2>
+<p>The table is the single source of truth for every wire in this build. It is
+copied exactly from the production firmware's pinout
+(<code>firmware/CareCube_ESP32_Firmware_v2</code>).</p>
+
+<table class="slim">
+  <tr><th>Purpose</th><th>GPIO / Power pin</th><th>Connects to</th></tr>
+  <tr><td>I2C &mdash; SDA (data)</td><td>GPIO21</td><td>LCD SDA, DS1307 SDA, VL53L0X #1&ndash;7 SDA</td></tr>
+  <tr><td>I2C &mdash; SCL (clock)</td><td>GPIO22</td><td>LCD SCL, DS1307 SCL, VL53L0X #1&ndash;7 SCL</td></tr>
+  <tr><td>DHT22 data</td><td>GPIO16</td><td>DHT22 DATA pin</td></tr>
+  <tr><td>Buzzer</td><td>GPIO2</td><td>Buzzer +</td></tr>
+  <tr><td>LED 1 &mdash; red</td><td>GPIO4</td><td>LED 1 anode</td></tr>
+  <tr><td>LED 2 &mdash; orange</td><td>GPIO12</td><td>LED 2 anode</td></tr>
+  <tr><td>LED 3 &mdash; yellow</td><td>GPIO19</td><td>LED 3 anode</td></tr>
+  <tr><td>LED 4 &mdash; green</td><td>GPIO18</td><td>LED 4 anode</td></tr>
+  <tr><td>LED 5 &mdash; blue</td><td>GPIO23</td><td>LED 5 anode</td></tr>
+  <tr><td>LED 6 &mdash; purple</td><td>GPIO13</td><td>LED 6 anode</td></tr>
+  <tr><td>LED 7 &mdash; red (emergency)</td><td>GPIO15</td><td>LED 7 anode</td></tr>
+  <tr><td>VL53L0X #1 XSHUT</td><td>GPIO25</td><td>Sensor #1 XSHUT</td></tr>
+  <tr><td>VL53L0X #2 XSHUT</td><td>GPIO26</td><td>Sensor #2 XSHUT</td></tr>
+  <tr><td>VL53L0X #3 XSHUT</td><td>GPIO27</td><td>Sensor #3 XSHUT</td></tr>
+  <tr><td>VL53L0X #4 XSHUT</td><td>GPIO32</td><td>Sensor #4 XSHUT</td></tr>
+  <tr><td>VL53L0X #5 XSHUT</td><td>GPIO33</td><td>Sensor #5 XSHUT</td></tr>
+  <tr><td>VL53L0X #6 XSHUT</td><td>GPIO14</td><td>Sensor #6 XSHUT</td></tr>
+  <tr><td>VL53L0X #7 XSHUT (emergency)</td><td>GPIO5</td><td>Sensor #7 XSHUT</td></tr>
+  <tr><td>Power</td><td>3V3</td><td>DHT22 VCC, LCD VCC, DS1307 VCC, all 7&times; VL53L0X VIN</td></tr>
+  <tr><td>Ground</td><td>GND</td><td>DHT22 GND, LCD GND, DS1307 GND, buzzer &ndash;, all LED cathodes, all VL53L0X GND</td></tr>
+</table>
+
+<div class="pagebreak"></div>
+<h3>Wiring as a picture</h3>
+<p>Everything shares three groups of nets. Mentally split the build into these
+three groups and the whole circuit becomes simple:</p>
+
+<pre>
+          GROUP A: POWER (3V3 + GND)
+          ┌──────────────┐
+          │   3V3 net    │──── DHT22 VCC, LCD VCC, DS1307 VCC, VL53L0X #1..#7 VIN
+          │   GND net    │──── DHT22 GND, LCD GND, DS1307 GND, buzzer(-),
+          │              │     LED #1..#7 cathode, VL53L0X #1..#7 GND
+          └──────────────┘
+
+          GROUP B: I2C BUS (two wires everywhere)
+          GPIO21 ── SDA ──┬── LCD SDA
+                          ├── DS1307 SDA
+                          └── VL53L0X #1..#7 SDA        (9 devices, all
+          GPIO22 ── SCL ──┬── LCD SCL                    share the same
+                          ├── DS1307 SCL                  two wires)
+                          └── VL53L0X #1..#7 SCL
+
+          GROUP C: OUTPUTS (one wire each from the ESP32-S3)
+          GPIO16 ── DHT22 DATA
+          GPIO 2 ── Buzzer +
+          GPIO 4 ── LED 1 anode ... GPIO 15 ── LED 7 anode
+          GPIO25 ── VL53L0X #1 XSHUT ... GPIO5 ── VL53L0X #7 XSHUT
+</pre>
+
+<div class="callout">
+  <b>Why seven VL53L0X sensors share two wires?</b> All distance sensors are
+  I2C devices that start with the same address (0x29). The firmware uses the
+  <b>XSHUT</b> pin to wake them one at a time, giving each its own address
+  (0x30&ndash;0x36) during startup. That is why every sensor gets its own
+  XSHUT wire while SDA/SCL are shared. In simulation the sensors are optional;
+  if one reports "NOT FOUND" the firmware simply skips it.
+</div>
+
+<!-- ============================ 5. BUILD ORDER ============================ -->
+<h2>5. Recommended build order</h2>
+<p>Building in this order avoids re-touching parts and makes mistakes easy to
+spot:</p>
+<ol>
+  <li><b>Place all 22 parts</b> on the canvas and spread them out.</li>
+  <li>Wire the <b>power rails</b> first (3V3 and GND) to every part that needs power.</li>
+  <li>Wire the <b>I2C bus</b> (SDA to GPIO21, SCL to GPIO22) for the LCD, RTC and all sensors.</li>
+  <li>Wire the <b>single-pin outputs</b>: DHT22 data, buzzer, the seven LEDs.</li>
+  <li>Wire each VL53L0X <b>XSHUT</b> to its dedicated GPIO.</li>
+</ol>
+
+<!-- ============================ 6. DETAILED WIRING ============================ -->
+<div class="pagebreak"></div>
+<h2>6. Detailed wiring, step by step</h2>
+
+<h3>6.1 Power — 3V3 net</h3>
+<p>Connect <b>3V3</b> on the ESP32-S3 to each of these pins:</p>
+<table class="slim">
+  <tr><th>From (ESP32-S3)</th><th>To (part pin)</th><th>Wire color suggestion</th></tr>
+  <tr><td>3V3</td><td>DHT22 <b>VCC</b></td><td>red</td></tr>
+  <tr><td>3V3</td><td>LCD 20x4 <b>VCC</b></td><td>red</td></tr>
+  <tr><td>3V3</td><td>DS1307 <b>VCC</b> (or 5V)</td><td>red</td></tr>
+  <tr><td>3V3</td><td>VL53L0X <b>#1 VIN</b></td><td>red</td></tr>
+  <tr><td>3V3</td><td>VL53L0X <b>#2 VIN</b></td><td>red</td></tr>
+  <tr><td>3V3</td><td>VL53L0X <b>#3 VIN</b></td><td>red</td></tr>
+  <tr><td>3V3</td><td>VL53L0X <b>#4 VIN</b></td><td>red</td></tr>
+  <tr><td>3V3</td><td>VL53L0X <b>#5 VIN</b></td><td>red</td></tr>
+  <tr><td>3V3</td><td>VL53L0X <b>#6 VIN</b></td><td>red</td></tr>
+  <tr><td>3V3</td><td>VL53L0X <b>#7 VIN</b></td><td>red</td></tr>
+</table>
+
+<h3>6.2 Ground — GND net</h3>
+<p>Connect <b>GND</b> on the ESP32-S3 to each of these pins:</p>
+<table class="slim">
+  <tr><th>From (ESP32-S3)</th><th>To (part pin)</th><th>Wire color suggestion</th></tr>
+  <tr><td>GND</td><td>DHT22 <b>GND</b></td><td>black</td></tr>
+  <tr><td>GND</td><td>LCD 20x4 <b>GND</b></td><td>black</td></tr>
+  <tr><td>GND</td><td>DS1307 <b>GND</b></td><td>black</td></tr>
+  <tr><td>GND</td><td>Buzzer <b>&ndash;</b></td><td>black</td></tr>
+  <tr><td>GND</td><td>LED <b>#1&ndash;#7 cathode</b> (7 wires)</td><td>black</td></tr>
+  <tr><td>GND</td><td>VL53L0X <b>#1&ndash;#7 GND</b> (7 wires)</td><td>black</td></tr>
+</table>
+
+<h3>6.3 I2C bus — SDA (GPIO21) and SCL (GPIO22)</h3>
+<p>One wire from GPIO21 to every device's <b>SDA</b>; one wire from GPIO22 to
+every device's <b>SCL</b>. Nine devices total.</p>
+<table class="slim">
+  <tr><th>ESP32-S3</th><th>To (SDA)</th><th>ESP32-S3</th><th>To (SCL)</th></tr>
+  <tr><td>GPIO21</td><td>LCD <b>SDA</b></td><td>GPIO22</td><td>LCD <b>SCL</b></td></tr>
+  <tr><td>GPIO21</td><td>DS1307 <b>SDA</b></td><td>GPIO22</td><td>DS1307 <b>SCL</b></td></tr>
+  <tr><td>GPIO21</td><td>VL53L0X #1 <b>SDA</b></td><td>GPIO22</td><td>VL53L0X #1 <b>SCL</b></td></tr>
+  <tr><td>GPIO21</td><td>VL53L0X #2 <b>SDA</b></td><td>GPIO22</td><td>VL53L0X #2 <b>SCL</b></td></tr>
+  <tr><td>GPIO21</td><td>VL53L0X #3 <b>SDA</b></td><td>GPIO22</td><td>VL53L0X #3 <b>SCL</b></td></tr>
+  <tr><td>GPIO21</td><td>VL53L0X #4 <b>SDA</b></td><td>GPIO22</td><td>VL53L0X #4 <b>SCL</b></td></tr>
+  <tr><td>GPIO21</td><td>VL53L0X #5 <b>SDA</b></td><td>GPIO22</td><td>VL53L0X #5 <b>SCL</b></td></tr>
+  <tr><td>GPIO21</td><td>VL53L0X #6 <b>SDA</b></td><td>GPIO22</td><td>VL53L0X #6 <b>SCL</b></td></tr>
+  <tr><td>GPIO21</td><td>VL53L0X #7 <b>SDA</b></td><td>GPIO22</td><td>VL53L0X #7 <b>SCL</b></td></tr>
+</table>
+<p class="small">On real hardware the LCD/DS1307 breakout boards provide the
+I2C pull-up resistors; in the simulator this is handled automatically.</p>
+
+<div class="pagebreak"></div>
+<h3>6.4 DHT22</h3>
+<table class="slim">
+  <tr><th>DHT22 pin</th><th>ESP32-S3 pin</th><th>Wire color suggestion</th></tr>
+  <tr><td><b>DATA</b></td><td><b>GPIO16</b></td><td>purple / green</td></tr>
+  <tr><td>VCC</td><td>3V3</td><td>red</td></tr>
+  <tr><td>GND</td><td>GND</td><td>black</td></tr>
+</table>
+
+<h3>6.5 Buzzer</h3>
+<table class="slim">
+  <tr><th>Buzzer pin</th><th>ESP32-S3 pin</th><th>Wire color suggestion</th></tr>
+  <tr><td><b>+</b></td><td><b>GPIO2</b></td><td>orange</td></tr>
+  <tr><td>&ndash;</td><td>GND</td><td>black</td></tr>
+</table>
+
+<h3>6.6 Seven LEDs (bay indicators)</h3>
+<p>Each LED's <b>anode</b> goes to its GPIO, <b>cathode</b> to GND.</p>
+<table class="slim">
+  <tr><th>LED</th><th>Color</th><th>Anode &rarr; GPIO</th><th>Cathode &rarr;</th></tr>
+  <tr><td>LED 1</td><td>red</td><td>GPIO4</td><td>GND</td></tr>
+  <tr><td>LED 2</td><td>orange</td><td>GPIO12</td><td>GND</td></tr>
+  <tr><td>LED 3</td><td>yellow</td><td>GPIO19</td><td>GND</td></tr>
+  <tr><td>LED 4</td><td>green</td><td>GPIO18</td><td>GND</td></tr>
+  <tr><td>LED 5</td><td>blue</td><td>GPIO23</td><td>GND</td></tr>
+  <tr><td>LED 6</td><td>purple</td><td>GPIO13</td><td>GND</td></tr>
+  <tr><td>LED 7</td><td>red</td><td>GPIO15</td><td>GND</td></tr>
+</table>
+
+<h3>6.7 Seven VL53L0X distance sensors (medicine bays 1&ndash;7)</h3>
+<p>Each sensor has the same 3 shared connections (VIN, GND, SDA, SCL) plus its
+own XSHUT wire. Only XSHUT differs per sensor.</p>
+<table class="slim">
+  <tr><th>Sensor</th><th>VIN</th><th>GND</th><th>SDA</th><th>SCL</th><th>XSHUT</th></tr>
+  <tr><td>#1 &mdash; slot A</td><td>3V3</td><td>GND</td><td>GPIO21</td><td>GPIO22</td><td><b>GPIO25</b></td></tr>
+  <tr><td>#2 &mdash; slot B</td><td>3V3</td><td>GND</td><td>GPIO21</td><td>GPIO22</td><td><b>GPIO26</b></td></tr>
+  <tr><td>#3 &mdash; slot C</td><td>3V3</td><td>GND</td><td>GPIO21</td><td>GPIO22</td><td><b>GPIO27</b></td></tr>
+  <tr><td>#4 &mdash; slot D</td><td>3V3</td><td>GND</td><td>GPIO21</td><td>GPIO22</td><td><b>GPIO32</b></td></tr>
+  <tr><td>#5 &mdash; slot E</td><td>3V3</td><td>GND</td><td>GPIO21</td><td>GPIO22</td><td><b>GPIO33</b></td></tr>
+  <tr><td>#6 &mdash; slot F</td><td>3V3</td><td>GND</td><td>GPIO21</td><td>GPIO22</td><td><b>GPIO14</b></td></tr>
+  <tr><td>#7 &mdash; emergency</td><td>3V3</td><td>GND</td><td>GPIO21</td><td>GPIO22</td><td><b>GPIO5</b></td></tr>
+</table>
+
+<!-- ============================ 7. CHECKLIST ============================ -->
+<div class="pagebreak"></div>
+<h2>7. Wiring checklist</h2>
+<p>Tick each box as you complete it. This is the fastest way to catch a missed
+wire before you ever run the simulation.</p>
+
+<h3>Power</h3>
+<ul class="check">
+  <li>3V3 &rarr; DHT22 VCC</li>
+  <li>3V3 &rarr; LCD VCC</li>
+  <li>3V3 &rarr; DS1307 VCC</li>
+  <li>3V3 &rarr; VL53L0X #1&ndash;#7 VIN (7 wires)</li>
+  <li>GND &rarr; DHT22 GND</li>
+  <li>GND &rarr; LCD GND</li>
+  <li>GND &rarr; DS1307 GND</li>
+  <li>GND &rarr; Buzzer &ndash;</li>
+  <li>GND &rarr; LED #1&ndash;#7 cathode (7 wires)</li>
+  <li>GND &rarr; VL53L0X #1&ndash;#7 GND (7 wires)</li>
+</ul>
+
+<h3>I2C bus</h3>
+<ul class="check">
+  <li>GPIO21 &rarr; LCD SDA</li>
+  <li>GPIO22 &rarr; LCD SCL</li>
+  <li>GPIO21 &rarr; DS1307 SDA</li>
+  <li>GPIO22 &rarr; DS1307 SCL</li>
+  <li>GPIO21 &rarr; VL53L0X #1&ndash;#7 SDA (7 wires)</li>
+  <li>GPIO22 &rarr; VL53L0X #1&ndash;#7 SCL (7 wires)</li>
+</ul>
+
+<h3>Signals</h3>
+<ul class="check">
+  <li>GPIO16 &rarr; DHT22 DATA</li>
+  <li>GPIO2 &rarr; Buzzer +</li>
+  <li>GPIO4/12/19/18/23/13/15 &rarr; LED #1&ndash;#7 anode</li>
+  <li>GPIO25/26/27/32/33/14/5 &rarr; VL53L0X #1&ndash;#7 XSHUT</li>
+</ul>
+
+<h3>Do a final visual review</h3>
+<ul>
+  <li>Any wire that should hit <b>GND</b> but doesn't will usually be the
+      difference between "works" and "nothing happens" &mdash; double-check the
+      black wires.</li>
+  <li>Confirm no SDA wire accidentally touches SCL (crossed wires are the #1
+      wiring error in this build).</li>
+  <li>Confirm each LED's anode/cathode orientation; an inverted LED stays dark.</li>
+</ul>
+
+<!-- ============================ 8. CODE ============================ -->
+<h2>8. Load the code</h2>
+<ol>
+  <li>In the Cirkit workspace click the <b>Code</b> tab (top-right area). It opens
+      an Arduino sketch editor already targeted at the ESP32-S3.</li>
+  <li>Delete the default sketch.</li>
+  <li>Open <code>cirkit/sketch.ino</code> from this repository and paste
+      <b>all of it</b> into the Code tab.</li>
+  <li>Save (the project auto-saves to the cloud).</li>
+</ol>
+<p>The sketch already handles the simulator specifics:</p>
+<ul>
+  <li>Connects to the virtual WiFi network <code>CirkitWifi</code> (no password).</li>
+  <li>Uses <code>WiFiClientSecure</code> + <code>setInsecure()</code> to talk TLS
+      to the HiveMQ Cloud broker on port 8883.</li>
+  <li>Publishes to <code>carecube/carecube-001/status</code> every 30 seconds.</li>
+  <li>Subscribes to schedule changes and alarm-stop commands.</li>
+  <li>Initializes every VL53L0X gracefully (missing ones are skipped, never a
+      crash loop) and falls back to the simulation clock if the DS1307 is missing.</li>
+</ul>
+
+<div class="warn">
+  The MQTT client id in the sketch is <code>carecube-001-cirkit</code>. Only one
+  client may use that id on the broker at a time. If your Wokwi demo is also
+  running, stop it (or change the id suffix) or you will see connection
+  churn. See Chapter 11.
+</div>
+
+<!-- ============================ 9. RUN ============================ -->
+<div class="pagebreak"></div>
+<h2>9. Run the simulation &mdash; what to expect</h2>
+<p>Click <b>Run</b> / <b>Start simulation</b> in the Simulate area.</p>
+
+<h3>Serial console (bottom panel)</h3>
+<p>You should see, in order:</p>
+<pre>
+Connecting to WiFi: CirkitWifi
+.WiFi connected!
+IP: 172.20.0.xx
+Connecting to MQTT... connected!
+Subscribed to: carecube/carecube-001/schedule/set
+Subscribed to: carecube/carecube-001/alarm/stop
+...
+==============================
+      CARE CUBE READY
+==============================
+Time: 19:12:05 | T:24.3C H:51.2% | MQTT:Y | S1:0 S2:0 S3:0 S4:0 S5:0 S6:0 S7:0
+...
+MQTT -> [carecube/carecube-001/status]
+{"device_id":"carecube-001","temperature":24.3,"humidity":51.2,"timestamp":1736090930}
+</pre>
+<p class="small">The <code>S1:0 ... S7:0</code> values stay at a small number in
+the simulator if the distance sensors are not interactive &mdash; that is normal
+and harmless for this build.</p>
+
+<h3>LCD display</h3>
+<pre>
+Line 1:  19:12:05    W:Y M:Y
+Line 2:  13/09/2026
+Line 3:  T:24.3C H:51.2%
+Line 4:  Next: 08:00PM
+</pre>
+
+<h3>Interactive parts</h3>
+<ul>
+  <li>Drag the <b>DHT22</b> value in the simulator (temperature/humidity
+      slider). Within ~30 seconds the new values appear in the console and on
+      the LCD.</li>
+  <li>At each dose time the matching <b>LED</b> lights and the <b>buzzer</b>
+      sounds; the console prints <code>REMINDER -&gt; SENSOR n TAKE MEDICINE</code>.</li>
+</ul>
+
+<h2>10. Verify end-to-end with the Care Cube app</h2>
+<ol>
+  <li>Build and install the app on your phone (the usual
+      <code>flutter build apk --debug</code> + adb workflow), leaving the Cirkit
+      simulation running in the browser.</li>
+  <li>Open the app and sign in.</li>
+  <li>Go to the <b>Home</b> tab.</li>
+  <li>The <b>connection status card</b> should change to "connected".</li>
+  <li>The <b>Temperature</b> and <b>Humidity</b> cards update every ~30
+      seconds, and immediately when you move the DHT22 slider in Cirkit.</li>
+  <li>Change a dose time in the <b>Medicine</b> tab and save &mdash; the app
+      publishes <code>carecube/carecube-001/schedule/set</code> and Cirkit's
+      serial console prints <code>Schedule updated via MQTT</code> with the new
+      time.</li>
+</ol>
+
+<!-- ============================ 11. TROUBLESHOOTING ============================ -->
+<div class="pagebreak"></div>
+<h2>11. Troubleshooting</h2>
+<table>
+  <tr><th style="width:30%">Symptom</th><th>Check</th></tr>
+  <tr><td>WiFi never connects</td><td>Make sure the sketch connects to
+      <code>CirkitWifi</code> exactly (not <code>Wokwi-GUEST</code>). The
+      simulator only supports this open access point.</td></tr>
+  <tr><td>MQTT fails with <code>failed, rc=...</code></td><td>HiveMQ Cloud needs
+      TLS on port 8883; the sketch already calls <code>setInsecure()</code>.
+      Verify the broker host, username and password in the sketch match
+      <code>lib/config/app_config.dart</code> in the app. As a connectivity
+      sanity check, open Cirkit's official "MQTT Temperature Monitor" example
+      first &mdash; if that also fails, the issue is general internet/TLS from
+      the simulator.</td></tr>
+  <tr><td>Messages arrive, then stop</td><td>Another client is using the same
+      MQTT client id on the broker (e.g. the Wokwi demo).
+      Stop the other simulation, or append a different suffix to
+      <code>MQTT_CLIENT_ID</code> in the sketch.</td></tr>
+  <tr><td>VL53L0X prints <code>NOT FOUND - skipping</code></td><td>Normal in the
+      simulator. Temperature/humidity streaming and schedule updates still work.
+      Distance sensing is only used to detect "medicine taken" and emergency
+      doses.</td></tr>
+  <tr><td>RTC prints <code>NOT FOUND</code></td><td>The sketch falls back to the
+      simulation clock, so dose timers still fire on time.</td></tr>
+  <tr><td>App shows "disconnected"</td><td>App and firmware must use the same
+      broker, device id (<code>carecube-001</code>) and topics. Confirm on the
+      Home tab that the connection card goes green, and that the Cirkit console
+      shows <code>MQTT:Y</code> in the status line.</td></tr>
+  <tr><td>LEDs stay dark at a dose time</td><td>Confirm dose is enabled (all 6
+      slots default ON) and check the LED's anode/cathode wiring. The simulator
+      runs faster than wall-clock; wait for the next scheduled minute to elapse.</td></tr>
+  <tr><td>Nothing appears on the LCD</td><td>Check I2C wiring (SDA &rarr; GPIO21,
+      SCL &rarr; GPIO22) and that the LCD part is the <b>I2C</b> variant.
+      If RTC is also missing, firmware still runs but you lose the display.</td></tr>
+</table>
+
+<!-- ============================ APPENDIX A ============================ -->
+<div class="pagebreak"></div>
+<h2>Appendix A &mdash; Complete net list</h2>
+<p>Every wire in the build, as a flat list.</p>
+
+<h3>3V3 net</h3>
+<pre>
+3V3  -> DHT22 VCC
+3V3  -> LCD VCC
+3V3  -> DS1307 VCC
+3V3  -> VL53L0X #1 VIN, #2 VIN, #3 VIN, #4 VIN, #5 VIN, #6 VIN, #7 VIN
+</pre>
+
+<h3>GND net</h3>
+<pre>
+GND  -> DHT22 GND
+GND  -> LCD GND
+GND  -> DS1307 GND
+GND  -> Buzzer -
+GND  -> LED #1 cathode .. LED #7 cathode
+GND  -> VL53L0X #1 GND .. VL53L0X #7 GND
+</pre>
+
+<h3>SDA net (GPIO21)</h3>
+<pre>
+GPIO21 -> LCD SDA
+GPIO21 -> DS1307 SDA
+GPIO21 -> VL53L0X #1..#7 SDA
+</pre>
+
+<h3>SCL net (GPIO22)</h3>
+<pre>
+GPIO22 -> LCD SCL
+GPIO22 -> DS1307 SCL
+GPIO22 -> VL53L0X #1..#7 SCL
+</pre>
+
+<h3>Individual signals</h3>
+<pre>
+GPIO16 -> DHT22 DATA
+GPIO2  -> Buzzer +
+GPIO4  -> LED 1 anode     (red)
+GPIO12 -> LED 2 anode     (orange)
+GPIO19 -> LED 3 anode     (yellow)
+GPIO18 -> LED 4 anode     (green)
+GPIO23 -> LED 5 anode     (blue)
+GPIO13 -> LED 6 anode     (purple)
+GPIO15 -> LED 7 anode     (red, emergency)
+GPIO25 -> VL53L0X #1 XSHUT
+GPIO26 -> VL53L0X #2 XSHUT
+GPIO27 -> VL53L0X #3 XSHUT
+GPIO32 -> VL53L0X #4 XSHUT
+GPIO33 -> VL53L0X #5 XSHUT
+GPIO14 -> VL53L0X #6 XSHUT
+GPIO5  -> VL53L0X #7 XSHUT
+</pre>
+
+<!-- ============================ APPENDIX B ============================ -->
+<h2>Appendix B &mdash; What the firmware does</h2>
+<p>Quick map of the state machine so simulation behavior makes sense:</p>
+<table class="slim">
+  <tr><th>State</th><th>Behavior</th><th>Published event</th></tr>
+  <tr><td>MAIN_SCREEN</td><td>Shows time, date, temp/humidity and next dose on
+      the LCD every 0.5 s.</td><td>&mdash;</td></tr>
+  <tr><td>MEDICINE_REMINDER (dose hour/minute reached)</td><td>LED of that bay
+      lights, buzzer sounds. If the bay's distance sensor reads &gt; 90 mm for
+      3 consecutive readings, the dose is logged as taken.</td>
+      <td>reminder_started, then taken</td></tr>
+  <tr><td>MEDICINE_TAKEN</td><td>Confirmation screen shown for 30 s, LED stays
+      on.</td><td>&mdash;</td></tr>
+  <tr><td>EMERGENCY_TAKEN (sensor #7 edge detected)</td>
+      <td>Buzzer + LED 7 for 60 s.</td><td>emergency_taken</td></tr>
+</table>
+<p class="small">"caregiver_stopped" is published when the app sends the remote
+alarm-stop command on <code>carecube/carecube-001/alarm/stop</code>.</p>
+
+<h3>MQTT topic map</h3>
+<pre>
+App -> Firmware   carecube/carecube-001/schedule/set     (JSON array, 6 slots)
+App -> Firmware   carecube/carecube-001/alarm/stop       (caregiver only)
+Firmware -> App   carecube/carecube-001/status           {device_id,temperature,humidity,timestamp}
+Firmware -> App   carecube/carecube-001/event            {device_id,type,sensor_number,timestamp}
+</pre>
+
+<div class="callout">
+  Repo files referenced by this guide: <code>cirkit/sketch.ino</code>,
+  <code>wokwi/sketch.ino</code> (original simulator port),
+  <code>firmware/CareCube_ESP32_Firmware_v2/CareCube_ESP32_Firmware_v2.ino</code>
+  (production firmware this build mirrors),
+  <code>lib/config/app_config.dart</code> and
+  <code>lib/services/mqtt_service.dart</code> (app-side MQTT contract).
+</div>
+
+</body>
+</html>

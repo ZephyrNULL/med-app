@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "author": "care_cube",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": -60, "left": -300, "attrs": {} },
+    { "type": "wokwi-lcd2004", "id": "lcd", "top": -300, "left": -300, "attrs": { "pins": "i2c" } },
+    { "type": "wokwi-ds1307", "id": "rtc", "top": -300, "left": 0, "attrs": {} },
+    { "type": "wokwi-dht22", "id": "dht", "top": -300, "left": 130, "attrs": {} },
+    { "type": "wokwi-buzzer", "id": "buzzer", "top": 80, "left": 340, "attrs": {} },
+    { "type": "wokwi-led", "id": "led1", "top": 200, "left": -360, "attrs": { "color": "red" } },
+    { "type": "wokwi-led", "id": "led2", "top": 200, "left": -280, "attrs": { "color": "orange" } },
+    { "type": "wokwi-led", "id": "led3", "top": 200, "left": -200, "attrs": { "color": "yellow" } },
+    { "type": "wokwi-led", "id": "led4", "top": 200, "left": -120, "attrs": { "color": "green" } },
+    { "type": "wokwi-led", "id": "led5", "top": 200, "left": -40, "attrs": { "color": "blue" } },
+    { "type": "wokwi-led", "id": "led6", "top": 200, "left": 40, "attrs": { "color": "purple" } },
+    { "type": "wokwi-led", "id": "led7", "top": 200, "left": 120, "attrs": { "color": "red" } }
+  ],
+  "connections": [
+    [ "esp:D21", "lcd:SDA", "green", [] ],
+    [ "esp:D22", "lcd:SCL", "yellow", [] ],
+    [ "esp:D21", "rtc:SDA", "green", [] ],
+    [ "esp:D22", "rtc:SCL", "yellow", [] ],
+    [ "esp:D16", "dht:SDA", "purple", [] ],
+
+    [ "esp:D2", "buzzer:2", "orange", [] ],
+    [ "buzzer:1", "esp:GND.1", "black", [] ],
+
+    [ "esp:D4", "led1:A", "orange", [] ],
+    [ "led1:C", "esp:GND.1", "black", [] ],
+    [ "esp:D12", "led2:A", "orange", [] ],
+    [ "led2:C", "esp:GND.1", "black", [] ],
+    [ "esp:D19", "led3:A", "orange", [] ],
+    [ "led3:C", "esp:GND.1", "black", [] ],
+    [ "esp:D18", "led4:A", "orange", [] ],
+    [ "led4:C", "esp:GND.1", "black", [] ],
+    [ "esp:D23", "led5:A", "orange", [] ],
+    [ "led5:C", "esp:GND.1", "black", [] ],
+    [ "esp:D13", "led6:A", "orange", [] ],
+    [ "led6:C", "esp:GND.1", "black", [] ],
+    [ "esp:D15", "led7:A", "orange", [] ],
+    [ "led7:C", "esp:GND.1", "black", [] ],
+
+    [ "esp:3V3", "lcd:VCC", "red", [] ],
+    [ "lcd:GND", "esp:GND.1", "black", [] ],
+    [ "esp:5V", "rtc:5V", "red", [] ],
+    [ "rtc:GND", "esp:GND.1", "black", [] ],
+    [ "esp:3V3", "dht:VCC", "red", [] ],
+    [ "dht:GND", "esp:GND.1", "black", [] ]
+  ]
+}

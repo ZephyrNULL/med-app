@@ -1,0 +1,880 @@
+{
+    "wires":  [
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w1",
+                      "signalType":  "i2c",
+                      "color":  "#00c800",
+                      "start":  {
+                                    "pinName":  "21",
+                                    "y":  0,
+                                    "componentId":  "esp32-devkit-c-v4",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "SDA",
+                                  "y":  0,
+                                  "componentId":  "lcd",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w2",
+                      "signalType":  "i2c",
+                      "color":  "#ffff00",
+                      "start":  {
+                                    "pinName":  "22",
+                                    "y":  0,
+                                    "componentId":  "esp32-devkit-c-v4",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "SCL",
+                                  "y":  0,
+                                  "componentId":  "lcd",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w3",
+                      "signalType":  "i2c",
+                      "color":  "#00c800",
+                      "start":  {
+                                    "pinName":  "21",
+                                    "y":  0,
+                                    "componentId":  "esp32-devkit-c-v4",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "SDA",
+                                  "y":  0,
+                                  "componentId":  "rtc",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w4",
+                      "signalType":  "i2c",
+                      "color":  "#ffff00",
+                      "start":  {
+                                    "pinName":  "22",
+                                    "y":  0,
+                                    "componentId":  "esp32-devkit-c-v4",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "SCL",
+                                  "y":  0,
+                                  "componentId":  "rtc",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w5",
+                      "signalType":  "digital",
+                      "color":  "#800080",
+                      "start":  {
+                                    "pinName":  "16",
+                                    "y":  0,
+                                    "componentId":  "esp32-devkit-c-v4",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "SDA",
+                                  "y":  0,
+                                  "componentId":  "dht",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w6",
+                      "signalType":  "digital",
+                      "color":  "#ff8800",
+                      "start":  {
+                                    "pinName":  "2",
+                                    "y":  0,
+                                    "componentId":  "esp32-devkit-c-v4",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "2",
+                                  "y":  0,
+                                  "componentId":  "buzzer",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w7",
+                      "signalType":  "power-gnd",
+                      "color":  "#000000",
+                      "start":  {
+                                    "pinName":  "1",
+                                    "y":  0,
+                                    "componentId":  "buzzer",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "GND.1",
+                                  "y":  0,
+                                  "componentId":  "esp32-devkit-c-v4",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w8",
+                      "signalType":  "digital",
+                      "color":  "#ff8800",
+                      "start":  {
+                                    "pinName":  "4",
+                                    "y":  0,
+                                    "componentId":  "esp32-devkit-c-v4",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "1",
+                                  "y":  0,
+                                  "componentId":  "r1",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w9",
+                      "signalType":  "digital",
+                      "color":  "#ff8800",
+                      "start":  {
+                                    "pinName":  "2",
+                                    "y":  0,
+                                    "componentId":  "r1",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "A",
+                                  "y":  0,
+                                  "componentId":  "led1",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w10",
+                      "signalType":  "power-gnd",
+                      "color":  "#000000",
+                      "start":  {
+                                    "pinName":  "C",
+                                    "y":  0,
+                                    "componentId":  "led1",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "GND.1",
+                                  "y":  0,
+                                  "componentId":  "esp32-devkit-c-v4",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w11",
+                      "signalType":  "digital",
+                      "color":  "#ff8800",
+                      "start":  {
+                                    "pinName":  "12",
+                                    "y":  0,
+                                    "componentId":  "esp32-devkit-c-v4",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "1",
+                                  "y":  0,
+                                  "componentId":  "r2",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w12",
+                      "signalType":  "digital",
+                      "color":  "#ff8800",
+                      "start":  {
+                                    "pinName":  "2",
+                                    "y":  0,
+                                    "componentId":  "r2",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "A",
+                                  "y":  0,
+                                  "componentId":  "led2",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w13",
+                      "signalType":  "power-gnd",
+                      "color":  "#000000",
+                      "start":  {
+                                    "pinName":  "C",
+                                    "y":  0,
+                                    "componentId":  "led2",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "GND.1",
+                                  "y":  0,
+                                  "componentId":  "esp32-devkit-c-v4",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w14",
+                      "signalType":  "digital",
+                      "color":  "#ff8800",
+                      "start":  {
+                                    "pinName":  "19",
+                                    "y":  0,
+                                    "componentId":  "esp32-devkit-c-v4",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "1",
+                                  "y":  0,
+                                  "componentId":  "r3",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w15",
+                      "signalType":  "digital",
+                      "color":  "#ff8800",
+                      "start":  {
+                                    "pinName":  "2",
+                                    "y":  0,
+                                    "componentId":  "r3",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "A",
+                                  "y":  0,
+                                  "componentId":  "led3",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w16",
+                      "signalType":  "power-gnd",
+                      "color":  "#000000",
+                      "start":  {
+                                    "pinName":  "C",
+                                    "y":  0,
+                                    "componentId":  "led3",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "GND.1",
+                                  "y":  0,
+                                  "componentId":  "esp32-devkit-c-v4",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w17",
+                      "signalType":  "digital",
+                      "color":  "#ff8800",
+                      "start":  {
+                                    "pinName":  "18",
+                                    "y":  0,
+                                    "componentId":  "esp32-devkit-c-v4",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "1",
+                                  "y":  0,
+                                  "componentId":  "r4",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w18",
+                      "signalType":  "digital",
+                      "color":  "#ff8800",
+                      "start":  {
+                                    "pinName":  "2",
+                                    "y":  0,
+                                    "componentId":  "r4",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "A",
+                                  "y":  0,
+                                  "componentId":  "led4",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w19",
+                      "signalType":  "power-gnd",
+                      "color":  "#000000",
+                      "start":  {
+                                    "pinName":  "C",
+                                    "y":  0,
+                                    "componentId":  "led4",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "GND.1",
+                                  "y":  0,
+                                  "componentId":  "esp32-devkit-c-v4",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w20",
+                      "signalType":  "digital",
+                      "color":  "#ff8800",
+                      "start":  {
+                                    "pinName":  "23",
+                                    "y":  0,
+                                    "componentId":  "esp32-devkit-c-v4",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "1",
+                                  "y":  0,
+                                  "componentId":  "r5",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w21",
+                      "signalType":  "digital",
+                      "color":  "#ff8800",
+                      "start":  {
+                                    "pinName":  "2",
+                                    "y":  0,
+                                    "componentId":  "r5",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "A",
+                                  "y":  0,
+                                  "componentId":  "led5",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w22",
+                      "signalType":  "power-gnd",
+                      "color":  "#000000",
+                      "start":  {
+                                    "pinName":  "C",
+                                    "y":  0,
+                                    "componentId":  "led5",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "GND.1",
+                                  "y":  0,
+                                  "componentId":  "esp32-devkit-c-v4",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w23",
+                      "signalType":  "digital",
+                      "color":  "#ff8800",
+                      "start":  {
+                                    "pinName":  "13",
+                                    "y":  0,
+                                    "componentId":  "esp32-devkit-c-v4",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "1",
+                                  "y":  0,
+                                  "componentId":  "r6",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w24",
+                      "signalType":  "digital",
+                      "color":  "#ff8800",
+                      "start":  {
+                                    "pinName":  "2",
+                                    "y":  0,
+                                    "componentId":  "r6",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "A",
+                                  "y":  0,
+                                  "componentId":  "led6",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w25",
+                      "signalType":  "power-gnd",
+                      "color":  "#000000",
+                      "start":  {
+                                    "pinName":  "C",
+                                    "y":  0,
+                                    "componentId":  "led6",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "GND.1",
+                                  "y":  0,
+                                  "componentId":  "esp32-devkit-c-v4",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w26",
+                      "signalType":  "digital",
+                      "color":  "#ff8800",
+                      "start":  {
+                                    "pinName":  "15",
+                                    "y":  0,
+                                    "componentId":  "esp32-devkit-c-v4",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "1",
+                                  "y":  0,
+                                  "componentId":  "r7",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w27",
+                      "signalType":  "digital",
+                      "color":  "#ff8800",
+                      "start":  {
+                                    "pinName":  "2",
+                                    "y":  0,
+                                    "componentId":  "r7",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "A",
+                                  "y":  0,
+                                  "componentId":  "led7",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w28",
+                      "signalType":  "power-gnd",
+                      "color":  "#000000",
+                      "start":  {
+                                    "pinName":  "C",
+                                    "y":  0,
+                                    "componentId":  "led7",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "GND.1",
+                                  "y":  0,
+                                  "componentId":  "esp32-devkit-c-v4",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w29",
+                      "signalType":  "power-vcc",
+                      "color":  "#ff0000",
+                      "start":  {
+                                    "pinName":  "3V3",
+                                    "y":  0,
+                                    "componentId":  "esp32-devkit-c-v4",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "VCC",
+                                  "y":  0,
+                                  "componentId":  "lcd",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w30",
+                      "signalType":  "power-gnd",
+                      "color":  "#000000",
+                      "start":  {
+                                    "pinName":  "GND",
+                                    "y":  0,
+                                    "componentId":  "lcd",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "GND.1",
+                                  "y":  0,
+                                  "componentId":  "esp32-devkit-c-v4",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w31",
+                      "signalType":  "power-vcc",
+                      "color":  "#ff0000",
+                      "start":  {
+                                    "pinName":  "5V",
+                                    "y":  0,
+                                    "componentId":  "esp32-devkit-c-v4",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "5V",
+                                  "y":  0,
+                                  "componentId":  "rtc",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w32",
+                      "signalType":  "power-gnd",
+                      "color":  "#000000",
+                      "start":  {
+                                    "pinName":  "GND",
+                                    "y":  0,
+                                    "componentId":  "rtc",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "GND.1",
+                                  "y":  0,
+                                  "componentId":  "esp32-devkit-c-v4",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w33",
+                      "signalType":  "power-vcc",
+                      "color":  "#ff0000",
+                      "start":  {
+                                    "pinName":  "3V3",
+                                    "y":  0,
+                                    "componentId":  "esp32-devkit-c-v4",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "VCC",
+                                  "y":  0,
+                                  "componentId":  "dht",
+                                  "x":  0
+                              }
+                  },
+                  {
+                      "waypoints":  [
+
+                                    ],
+                      "id":  "w34",
+                      "signalType":  "power-gnd",
+                      "color":  "#000000",
+                      "start":  {
+                                    "pinName":  "GND",
+                                    "y":  0,
+                                    "componentId":  "dht",
+                                    "x":  0
+                                },
+                      "end":  {
+                                  "pinName":  "GND.1",
+                                  "y":  0,
+                                  "componentId":  "esp32-devkit-c-v4",
+                                  "x":  0
+                              }
+                  }
+              ],
+    "version":  1,
+    "exportedAt":  "2026-09-13T14:59:48.126Z",
+    "format":  "velxio-project",
+    "fileGroups":  {
+                       "group-esp32-devkit-c-v4":  [
+                                                       {
+                                                           "content":  "#include \u003cWiFi.h\u003e\n#include \u003cWiFiClientSecure.h\u003e\n#include \u003cPubSubClient.h\u003e\n#include \u003cWire.h\u003e\n#include \u003cLiquidCrystal_I2C.h\u003e\n#include \u003cVL53L0X.h\u003e\n#include \u003cRTClib.h\u003e\n#include \u003cDHT.h\u003e\n#include \u003cArduinoJson.h\u003e\n\n// ======================================================\n// CIRKIT DESIGNER PORT (ESP32-S3)\n// ======================================================\n// Runs the full Care Cube circuit inside Cirkit Designer\u0027s\n// ESP32-S3 simulator and streams temperature/humidity (and any\n// dose/emergency events) to the SAME HiveMQ Cloud broker the\n// mobile app subscribes to.\n//\n// Differences from the production firmware:\n//   1. WiFi is the simulator\u0027s open \"CirkitWifi\" AP (no password,\n//      no WiFiManager/Preferences provisioning).\n//   2. Uses RTC_DS1307 (the part Cirkit simulates) and falls back\n//      to the sim clock if the RTC is missing.\n//   3. VL53L0X sensors are initialized gracefully (skipped, not a\n//      hard loop) so the sim runs without every distance sensor.\n//   4. Device id is fixed to \"carecube-001\" so the app sees the box.\n//\n// Pinout mirrors the real box (see firmware/CareCube_ESP32_Firmware_v2):\n//   DHT22   -\u003e GPIO16\n//   I2C     -\u003e SDA GPIO21, SCL GPIO22  (LCD 0x27, DS1307, 7x VL53L0X)\n//   XSHUT   -\u003e GPIO25,26,27,32,33,14,5\n//   LEDs    -\u003e GPIO4,12,19,18,23,13,15\n//   BUZZER  -\u003e GPIO2\n\n// ======================================================\n// WIFI (Cirkit virtual access point)\n// ======================================================\nconst char* WIFI_SSID     = \"CirkitWifi\";\nconst char* WIFI_PASSWORD = \"\";\n\n// ======================================================\n// MQTT BROKER (HiveMQ Cloud - matches the mobile app)\n// ======================================================\nconst char* MQTT_BROKER   = \"15eb54ef85ce471890ec2a12019e88b4.s1.eu.hivemq.cloud\";\nconst int   MQTT_PORT     = 8883;\nconst char* MQTT_USERNAME = \"CareCube12\";\nconst char* MQTT_PASSWORD = \"CareCube@2006\";\nconst char* MQTT_CLIENT_ID = \"carecube-001-cirkit\";\n\n// ======================================================\n// DEVICE ID (must match app config)\n// ======================================================\nconst char* DEVICE_ID = \"carecube-001\";\n\n// ======================================================\n// MQTT TOPICS\n// ======================================================\nString topicScheduleSet;\nString topicStatus;\nString topicEvent;\nString topicAlarmStop;\n\n// ======================================================\n// OBJECTS\n// ======================================================\nWiFiClientSecure wifiClient;\nPubSubClient     mqttClient(wifiClient);\nLiquidCrystal_I2C lcd(0x27, 20, 4);\nRTC_DS1307   rtc;\nDHT          dht(16, DHT22);\n\nVL53L0X sensor1;\nVL53L0X sensor2;\nVL53L0X sensor3;\nVL53L0X sensor4;\nVL53L0X sensor5;\nVL53L0X sensor6;\nVL53L0X sensor7;\n\n// ======================================================\n// XSHUT PINS\n// ======================================================\n#define XSHUT_1 25\n#define XSHUT_2 26\n#define XSHUT_3 27\n#define XSHUT_4 32\n#define XSHUT_5 33\n#define XSHUT_6 14\n#define XSHUT_7 5\n\n// ======================================================\n// LED PINS\n// ======================================================\n#define LED_1 4\n#define LED_2 12\n#define LED_3 19\n#define LED_4 18\n#define LED_5 23\n#define LED_6 13\n#define LED_7 15\n\n// ======================================================\n// BUZZER\n// ======================================================\n#define BUZZER 2\n\n// ======================================================\n// MEDICINE DISTANCE THRESHOLD\n// ======================================================\n#define MEDICINE_THRESHOLD 90\n\n// ======================================================\n// DOSE SCHEDULE (6 slots)\n// ======================================================\nint doseSensor[6]  = {0, 1, 2, 3, 4, 5};\nint doseHour[6]    = {8, 10, 12, 14, 16, 20};\nint doseMinute[6]  = {0, 0, 0, 0, 0, 0};\nbool doseEnabled[6] = {true, true, true, true, true, true};\nbool doseTriggered[6] = {false, false, false, false, false, false};\n\n// ======================================================\n// EMERGENCY SLOT\n// ======================================================\nconst int EMERGENCY_SLOT = 6;\n\n// ======================================================\n// DAILY DOSE FLAGS\n// ======================================================\nint activeReminder = -1;\n\n// ======================================================\n// DISPLAY STATES\n// ======================================================\nenum DisplayState {\n  MAIN_SCREEN,\n  MEDICINE_REMINDER,\n  MEDICINE_TAKEN,\n  EMERGENCY_TAKEN\n};\n\nDisplayState displayState = MAIN_SCREEN;\n\n// ======================================================\n// MESSAGE TIMER\n// ======================================================\nunsigned long messageStartTime = 0;\nconst unsigned long MEDICINE_MESSAGE_TIME = 30000UL;\nconst unsigned long EMERGENCY_MESSAGE_TIME = 60000UL;\n\n// ======================================================\n// SENSOR DISTANCES\n// ======================================================\nint distance1 = 0;\nint distance2 = 0;\nint distance3 = 0;\nint distance4 = 0;\nint distance5 = 0;\nint distance6 = 0;\nint distance7 = 0;\n\n// ======================================================\n// ENVIRONMENT\n// ======================================================\nfloat temperature = 0.0;\nfloat humidity = 0.0;\nunsigned long lastDHTRead = 0;\n\n// ======================================================\n// MQTT PUBLISH TIMER\n// ======================================================\nunsigned long lastMQTTPublish = 0;\nconst unsigned long MQTT_PUBLISH_INTERVAL = 30000UL;\n\n// ======================================================\n// PREVIOUS S7 DISTANCE\n// ======================================================\nint previousDistance7 = 0;\n\n// ======================================================\n// EMERGENCY DETECTION\n// ======================================================\nbool emergencyTriggered = false;\n\n// ======================================================\n// LCD UPDATE TIMER\n// ======================================================\nunsigned long lastLCDUpdate = 0;\n\n// ======================================================\n// MEDICINE TAKEN CONFIRMATION\n// ======================================================\nint medicineTakenCount = 0;\nconst int REQUIRED_TAKEN_READINGS = 3;\n\n// ======================================================\n// TURN OFF ALL LEDs\n// ======================================================\nvoid turnOffAllLEDs() {\n  digitalWrite(LED_1, LOW);\n  digitalWrite(LED_2, LOW);\n  digitalWrite(LED_3, LOW);\n  digitalWrite(LED_4, LOW);\n  digitalWrite(LED_5, LOW);\n  digitalWrite(LED_6, LOW);\n  digitalWrite(LED_7, LOW);\n}\n\n// ======================================================\n// TURN ON ONE LED\n// ======================================================\nvoid turnOnLED(int sensorNumber) {\n  turnOffAllLEDs();\n  if      (sensorNumber == 0) digitalWrite(LED_1, HIGH);\n  else if (sensorNumber == 1) digitalWrite(LED_2, HIGH);\n  else if (sensorNumber == 2) digitalWrite(LED_3, HIGH);\n  else if (sensorNumber == 3) digitalWrite(LED_4, HIGH);\n  else if (sensorNumber == 4) digitalWrite(LED_5, HIGH);\n  else if (sensorNumber == 5) digitalWrite(LED_6, HIGH);\n  else if (sensorNumber == 6) digitalWrite(LED_7, HIGH);\n}\n\n// ======================================================\n// GET SENSOR DISTANCE\n// ======================================================\nint getSensorDistance(int sensorNumber) {\n  if      (sensorNumber == 0) return distance1;\n  else if (sensorNumber == 1) return distance2;\n  else if (sensorNumber == 2) return distance3;\n  else if (sensorNumber == 3) return distance4;\n  else if (sensorNumber == 4) return distance5;\n  else if (sensorNumber == 5) return distance6;\n  else if (sensorNumber == 6) return distance7;\n  return 0;\n}\n\n// ======================================================\n// FORMAT TIME AS 12-HOUR FORMAT\n// ======================================================\nvoid print12HourTime(int hour, int minute) {\n  int displayHour = hour;\n  if (displayHour == 0) displayHour = 12;\n  else if (displayHour \u003e 12) displayHour -= 12;\n\n  if (displayHour \u003c 10) lcd.print(\"0\");\n  lcd.print(displayHour);\n  lcd.print(\":\");\n  if (minute \u003c 10) lcd.print(\"0\");\n  lcd.print(minute);\n  if (hour \u003c 12) lcd.print(\"AM\");\n  else lcd.print(\"PM\");\n}\n\n// ======================================================\n// FIND NEXT DOSE\n// ======================================================\nint getNextDoseIndex(DateTime now) {\n  int currentMinutes = now.hour() * 60 + now.minute();\n  for (int i = 0; i \u003c 6; i++) {\n    if (!doseEnabled[i]) continue;\n    int doseMinutes = doseHour[i] * 60 + doseMinute[i];\n    if (doseMinutes \u003e currentMinutes) return i;\n  }\n  for (int i = 0; i \u003c 6; i++) {\n    if (!doseEnabled[i]) continue;\n    return i;\n  }\n  return 0;\n}\n\n// ======================================================\n// READ ALL VL53L0X SENSORS\n// ======================================================\nvoid readAllSensors() {\n  distance1 = sensor1.readRangeContinuousMillimeters();\n  distance2 = sensor2.readRangeContinuousMillimeters();\n  distance3 = sensor3.readRangeContinuousMillimeters();\n  distance4 = sensor4.readRangeContinuousMillimeters();\n  distance5 = sensor5.readRangeContinuousMillimeters();\n  distance6 = sensor6.readRangeContinuousMillimeters();\n  distance7 = sensor7.readRangeContinuousMillimeters();\n}\n\n// ======================================================\n// READ DHT22\n// ======================================================\nvoid readDHT22() {\n  if (millis() - lastDHTRead \u003e= 2000) {\n    lastDHTRead = millis();\n    float newHumidity = dht.readHumidity();\n    float newTemperature = dht.readTemperature();\n    if (!isnan(newHumidity) \u0026\u0026 !isnan(newTemperature)) {\n      humidity = newHumidity;\n      temperature = newTemperature;\n    }\n  }\n}\n\n// ======================================================\n// WIFI CONNECT (Cirkit virtual AP)\n// ======================================================\nvoid connectWiFi() {\n  Serial.print(\"Connecting to WiFi: \");\n  Serial.println(WIFI_SSID);\n\n  lcd.clear();\n  lcd.setCursor(0, 0);\n  lcd.print(\"WiFi Connecting...\");\n  lcd.setCursor(0, 1);\n  lcd.print(WIFI_SSID);\n\n  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);\n\n  int attempts = 0;\n  while (WiFi.status() != WL_CONNECTED \u0026\u0026 attempts \u003c 40) {\n    delay(500);\n    Serial.print(\".\");\n    lcd.setCursor(attempts % 20, 2);\n    lcd.print(\".\");\n    attempts++;\n  }\n\n  if (WiFi.status() == WL_CONNECTED) {\n    Serial.println(\"\\nWiFi connected!\");\n    Serial.print(\"IP: \");\n    Serial.println(WiFi.localIP());\n\n    lcd.clear();\n    lcd.setCursor(0, 0);\n    lcd.print(\"WiFi Connected!\");\n    lcd.setCursor(0, 1);\n    lcd.print(WiFi.localIP().toString());\n    delay(1500);\n  } else {\n    Serial.println(\"\\nWiFi connection failed!\");\n    lcd.clear();\n    lcd.setCursor(0, 0);\n    lcd.print(\"WiFi FAILED!\");\n    lcd.setCursor(0, 1);\n    lcd.print(\"Retrying in loop\");\n    delay(2000);\n  }\n}\n\n// ======================================================\n// MQTT RECONNECT\n// ======================================================\nvoid reconnectMQTT() {\n  if (mqttClient.connected()) return;\n\n  Serial.print(\"Connecting to MQTT...\");\n\n  if (mqttClient.connect(MQTT_CLIENT_ID, MQTT_USERNAME, MQTT_PASSWORD)) {\n    Serial.println(\"connected!\");\n\n    mqttClient.subscribe(topicScheduleSet.c_str());\n    mqttClient.subscribe(topicAlarmStop.c_str());\n\n    Serial.print(\"Subscribed to: \");\n    Serial.println(topicScheduleSet);\n    Serial.print(\"Subscribed to: \");\n    Serial.println(topicAlarmStop);\n  } else {\n    Serial.print(\"failed, rc=\");\n    Serial.println(mqttClient.state());\n  }\n}\n\n// ======================================================\n// MQTT CALLBACK\n// ======================================================\nvoid mqttCallback(char* topic, byte* payload, unsigned int length) {\n  String message;\n  for (unsigned int i = 0; i \u003c length; i++) {\n    message += (char)payload[i];\n  }\n\n  Serial.print(\"MQTT \u003c- [\");\n  Serial.print(topic);\n  Serial.print(\"] \");\n  Serial.println(message);\n\n  String topicStr = String(topic);\n\n  // ==================================================\n  // SCHEDULE UPDATE\n  // ==================================================\n  if (topicStr == topicScheduleSet) {\n    StaticJsonDocument\u003c1024\u003e doc;\n    DeserializationError error = deserializeJson(doc, message);\n\n    if (error) {\n      Serial.print(\"JSON parse error: \");\n      Serial.println(error.c_str());\n      return;\n    }\n\n    for (int i = 0; i \u003c 6; i++) {\n      if (doc[i].isNull()) {\n        doseEnabled[i] = false;\n        continue;\n      }\n\n      doseSensor[i]  = doc[i][\"sensor_number\"] | (i + 1);\n      doseHour[i]    = doc[i][\"hour\"] | 12;\n      doseMinute[i]  = doc[i][\"minute\"] | 0;\n      doseEnabled[i] = doc[i][\"enabled\"] | false;\n    }\n\n    Serial.println(\"Schedule updated via MQTT\");\n    for (int i = 0; i \u003c 6; i++) {\n      Serial.print(\"  Slot \");\n      Serial.print(i);\n      Serial.print(\": S\");\n      Serial.print(doseSensor[i]);\n      Serial.print(\" \");\n      if (doseHour[i] \u003c 10) Serial.print(\"0\");\n      Serial.print(doseHour[i]);\n      Serial.print(\":\");\n      if (doseMinute[i] \u003c 10) Serial.print(\"0\");\n      Serial.print(doseMinute[i]);\n      Serial.print(\" \");\n      Serial.println(doseEnabled[i] ? \"ON\" : \"OFF\");\n    }\n  }\n\n  // ==================================================\n  // ALARM STOP (caregiver only)\n  // ==================================================\n  if (topicStr == topicAlarmStop) {\n    if (displayState == MEDICINE_REMINDER || displayState == EMERGENCY_TAKEN) {\n      Serial.println(\"Alarm stopped by caregiver\");\n\n      digitalWrite(BUZZER, LOW);\n      turnOffAllLEDs();\n\n      publishEvent(\"caregiver_stopped\", doseSensor[activeReminder] + 1);\n\n      displayState = MAIN_SCREEN;\n      activeReminder = -1;\n      emergencyTriggered = false;\n      medicineTakenCount = 0;\n      lcd.clear();\n    }\n  }\n}\n\n// ======================================================\n// PUBLISH STATUS (temp/humidity)\n// ======================================================\nvoid publishStatus() {\n  if (!mqttClient.connected()) return;\n\n  StaticJsonDocument\u003c256\u003e doc;\n  doc[\"device_id\"]   = DEVICE_ID;\n  doc[\"temperature\"] = temperature;\n  doc[\"humidity\"]    = humidity;\n  doc[\"timestamp\"]   = millis() / 1000;\n\n  char buffer[256];\n  serializeJson(doc, buffer);\n\n  mqttClient.publish(topicStatus.c_str(), buffer, true);\n\n  Serial.print(\"MQTT -\u003e [\");\n  Serial.print(topicStatus);\n  Serial.print(\"] \");\n  Serial.println(buffer);\n}\n\n// ======================================================\n// PUBLISH EVENT\n// ======================================================\nvoid publishEvent(const char* eventType, int sensorNumber) {\n  if (!mqttClient.connected()) return;\n\n  StaticJsonDocument\u003c256\u003e doc;\n  doc[\"device_id\"]     = DEVICE_ID;\n  doc[\"type\"]          = eventType;\n  doc[\"sensor_number\"] = sensorNumber;\n  doc[\"timestamp\"]     = millis() / 1000;\n\n  char buffer[256];\n  serializeJson(doc, buffer);\n\n  mqttClient.publish(topicEvent.c_str(), buffer);\n\n  Serial.print(\"MQTT -\u003e [\");\n  Serial.print(topicEvent);\n  Serial.print(\"] \");\n  Serial.println(buffer);\n}\n\n// ======================================================\n// DISPLAY: MAIN SCREEN\n// ======================================================\nvoid displayMainScreen(DateTime now) {\n  lcd.clear();\n\n  // LINE 1 - TIME\n  lcd.setCursor(0, 0);\n  if (now.hour() \u003c 10) lcd.print(\"0\");\n  lcd.print(now.hour());\n  lcd.print(\":\");\n  if (now.minute() \u003c 10) lcd.print(\"0\");\n  lcd.print(now.minute());\n  lcd.print(\":\");\n  if (now.second() \u003c 10) lcd.print(\"0\");\n  lcd.print(now.second());\n\n  // WiFi + MQTT status\n  lcd.setCursor(13, 0);\n  lcd.print(\"W:\");\n  lcd.print(WiFi.status() == WL_CONNECTED ? \"Y\" : \"N\");\n  lcd.print(\" M:\");\n  lcd.print(mqttClient.connected() ? \"Y\" : \"N\");\n\n  // LINE 2 - DATE\n  lcd.setCursor(0, 1);\n  if (now.day() \u003c 10) lcd.print(\"0\");\n  lcd.print(now.day());\n  lcd.print(\"/\");\n  if (now.month() \u003c 10) lcd.print(\"0\");\n  lcd.print(now.month());\n  lcd.print(\"/\");\n  lcd.print(now.year());\n\n  // LINE 3 - TEMPERATURE + HUMIDITY\n  lcd.setCursor(0, 2);\n  lcd.print(\"T:\");\n  lcd.print(temperature, 1);\n  lcd.print((char)223);\n  lcd.print(\"C H:\");\n  lcd.print(humidity, 1);\n  lcd.print(\"%\");\n\n  // LINE 4 - NEXT DOSE\n  lcd.setCursor(0, 3);\n  lcd.print(\"Next: \");\n  int nextDose = getNextDoseIndex(now);\n  print12HourTime(doseHour[nextDose], doseMinute[nextDose]);\n}\n\n// ======================================================\n// DISPLAY: MEDICINE REMINDER\n// ======================================================\nvoid displayMedicineReminder() {\n  lcd.clear();\n  lcd.setCursor(0, 0);\n  lcd.print(\"   !! REMINDER !!\");\n  lcd.setCursor(0, 1);\n  lcd.print(\"   TAKE MEDICINE\");\n  lcd.setCursor(0, 2);\n  lcd.print(\"     SENSOR \");\n  lcd.print(doseSensor[activeReminder] + 1);\n  lcd.setCursor(0, 3);\n  lcd.print(\"Next: \");\n  int nextDose = (activeReminder + 1) % 6;\n  while (!doseEnabled[nextDose] \u0026\u0026 nextDose != activeReminder) {\n    nextDose = (nextDose + 1) % 6;\n  }\n  print12HourTime(doseHour[nextDose], doseMinute[nextDose]);\n}\n\n// ======================================================\n// DISPLAY: MEDICINE TAKEN\n// ======================================================\nvoid displayMedicineTaken() {\n  lcd.clear();\n  lcd.setCursor(0, 0);\n  lcd.print(\"  MEDICINE TAKEN\");\n  lcd.setCursor(0, 1);\n  lcd.print(\"     SENSOR \");\n  lcd.print(doseSensor[activeReminder] + 1);\n  lcd.setCursor(0, 2);\n  lcd.print(\"     WELL DONE!\");\n  lcd.setCursor(0, 3);\n  lcd.print(\"Next: \");\n  int nextDose = (activeReminder + 1) % 6;\n  while (!doseEnabled[nextDose] \u0026\u0026 nextDose != activeReminder) {\n    nextDose = (nextDose + 1) % 6;\n  }\n  print12HourTime(doseHour[nextDose], doseMinute[nextDose]);\n}\n\n// ======================================================\n// DISPLAY: EMERGENCY\n// ======================================================\nvoid displayEmergencyTaken() {\n  lcd.clear();\n  lcd.setCursor(0, 0);\n  lcd.print(\"   ATTENTION!\");\n  lcd.setCursor(0, 1);\n  lcd.print(\" EMERGENCY DOSE\");\n  lcd.setCursor(0, 2);\n  lcd.print(\"      TAKEN!\");\n  lcd.setCursor(0, 3);\n  lcd.print(\"    PLEASE CHECK\");\n}\n\n// ======================================================\n// SETUP\n// ======================================================\nvoid setup() {\n  Serial.begin(115200);\n\n  // ====================================================\n  // BUILD MQTT TOPICS (fixed device id)\n  // ====================================================\n  topicScheduleSet = String(\"carecube/\") + DEVICE_ID + \"/schedule/set\";\n  topicStatus      = String(\"carecube/\") + DEVICE_ID + \"/status\";\n  topicEvent       = String(\"carecube/\") + DEVICE_ID + \"/event\";\n  topicAlarmStop   = String(\"carecube/\") + DEVICE_ID + \"/alarm/stop\";\n\n  // ====================================================\n  // I2C\n  // ====================================================\n  Wire.begin(21, 22);\n\n  // ====================================================\n  // LCD (needed for the boot screen)\n  // ====================================================\n  lcd.init();\n  lcd.backlight();\n  lcd.clear();\n  lcd.setCursor(0, 0);\n  lcd.print(\"     CARE CUBE\");\n  lcd.setCursor(0, 1);\n  lcd.print(\"  MEDICINE SYSTEM\");\n\n  // ====================================================\n  // WIFI\n  // ====================================================\n  connectWiFi();\n\n  // ====================================================\n  // MQTT\n  // ====================================================\n  wifiClient.setInsecure();\n  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);\n  mqttClient.setCallback(mqttCallback);\n  mqttClient.setBufferSize(1024);\n  reconnectMQTT();\n\n  // ====================================================\n  // LEDs\n  // ====================================================\n  pinMode(LED_1, OUTPUT);\n  pinMode(LED_2, OUTPUT);\n  pinMode(LED_3, OUTPUT);\n  pinMode(LED_4, OUTPUT);\n  pinMode(LED_5, OUTPUT);\n  pinMode(LED_6, OUTPUT);\n  pinMode(LED_7, OUTPUT);\n  turnOffAllLEDs();\n\n  // ====================================================\n  // BUZZER\n  // ====================================================\n  pinMode(BUZZER, OUTPUT);\n  digitalWrite(BUZZER, LOW);\n\n  // ====================================================\n  // DHT22\n  // ====================================================\n  dht.begin();\n\n  // ====================================================\n  // XSHUT PINS\n  // ====================================================\n  pinMode(XSHUT_1, OUTPUT);\n  pinMode(XSHUT_2, OUTPUT);\n  pinMode(XSHUT_3, OUTPUT);\n  pinMode(XSHUT_4, OUTPUT);\n  pinMode(XSHUT_5, OUTPUT);\n  pinMode(XSHUT_6, OUTPUT);\n  pinMode(XSHUT_7, OUTPUT);\n\n  digitalWrite(XSHUT_1, LOW);\n  digitalWrite(XSHUT_2, LOW);\n  digitalWrite(XSHUT_3, LOW);\n  digitalWrite(XSHUT_4, LOW);\n  digitalWrite(XSHUT_5, LOW);\n  digitalWrite(XSHUT_6, LOW);\n  digitalWrite(XSHUT_7, LOW);\n  delay(100);\n\n  // ====================================================\n  // SENSOR 1\n  // ====================================================\n  digitalWrite(XSHUT_1, HIGH);\n  delay(100);\n  if (!sensor1.init()) { Serial.println(\"Sensor 1 NOT FOUND - skipping\"); }\n  sensor1.setAddress(0x30);\n  sensor1.setTimeout(500);\n  sensor1.startContinuous();\n\n  // ====================================================\n  // SENSOR 2\n  // ====================================================\n  digitalWrite(XSHUT_2, HIGH);\n  delay(100);\n  if (!sensor2.init()) { Serial.println(\"Sensor 2 NOT FOUND - skipping\"); }\n  sensor2.setAddress(0x31);\n  sensor2.setTimeout(500);\n  sensor2.startContinuous();\n\n  // ====================================================\n  // SENSOR 3\n  // ====================================================\n  digitalWrite(XSHUT_3, HIGH);\n  delay(100);\n  if (!sensor3.init()) { Serial.println(\"Sensor 3 NOT FOUND - skipping\"); }\n  sensor3.setAddress(0x32);\n  sensor3.setTimeout(500);\n  sensor3.startContinuous();\n\n  // ====================================================\n  // SENSOR 4\n  // ====================================================\n  digitalWrite(XSHUT_4, HIGH);\n  delay(100);\n  if (!sensor4.init()) { Serial.println(\"Sensor 4 NOT FOUND - skipping\"); }\n  sensor4.setAddress(0x33);\n  sensor4.setTimeout(500);\n  sensor4.startContinuous();\n\n  // ====================================================\n  // SENSOR 5\n  // ====================================================\n  digitalWrite(XSHUT_5, HIGH);\n  delay(100);\n  if (!sensor5.init()) { Serial.println(\"Sensor 5 NOT FOUND - skipping\"); }\n  sensor5.setAddress(0x34);\n  sensor5.setTimeout(500);\n  sensor5.startContinuous();\n\n  // ====================================================\n  // SENSOR 6\n  // ====================================================\n  digitalWrite(XSHUT_6, HIGH);\n  delay(100);\n  if (!sensor6.init()) { Serial.println(\"Sensor 6 NOT FOUND - skipping\"); }\n  sensor6.setAddress(0x35);\n  sensor6.setTimeout(500);\n  sensor6.startContinuous();\n\n  // ====================================================\n  // SENSOR 7 - EMERGENCY\n  // ====================================================\n  digitalWrite(XSHUT_7, HIGH);\n  delay(100);\n  if (!sensor7.init()) { Serial.println(\"Sensor 7 NOT FOUND - skipping\"); }\n  sensor7.setAddress(0x36);\n  sensor7.setTimeout(500);\n  sensor7.startContinuous();\n\n  // ====================================================\n  // RTC\n  // ====================================================\n  if (!rtc.begin()) {\n    Serial.println(\"RTC NOT FOUND - continuing with sim clock\");\n  } else {\n    Serial.println(\"RTC found\");\n  }\n\n  // ====================================================\n  // LCD BOOT SCREEN\n  // ====================================================\n  lcd.clear();\n  lcd.setCursor(0, 0);\n  lcd.print(\"     CARE CUBE\");\n  lcd.setCursor(0, 1);\n  lcd.print(\"  MEDICINE SYSTEM\");\n  lcd.setCursor(0, 2);\n  lcd.print(\"   SYSTEM READY\");\n  lcd.setCursor(0, 3);\n  lcd.print(\"  Initializing...\");\n  delay(2000);\n\n  // ====================================================\n  // INITIAL EMERGENCY SENSOR READING\n  // ====================================================\n  previousDistance7 = sensor7.readRangeContinuousMillimeters();\n\n  Serial.println(\"==============================\");\n  Serial.println(\"      CARE CUBE READY\");\n  Serial.println(\"==============================\");\n  Serial.println(\"MQTT Topics:\");\n  Serial.print(\"  Schedule: \");\n  Serial.println(topicScheduleSet);\n  Serial.print(\"  Status:   \");\n  Serial.println(topicStatus);\n  Serial.print(\"  Event:    \");\n  Serial.println(topicEvent);\n  Serial.print(\"  Alarm:    \");\n  Serial.println(topicAlarmStop);\n}\n\n// ======================================================\n// LOOP\n// ======================================================\nvoid loop() {\n  DateTime now = rtc.now();\n\n  // ====================================================\n  // MQTT LOOP\n  // ====================================================\n  mqttClient.loop();\n\n  // ====================================================\n  // WIFI RECONNECT\n  // ====================================================\n  if (WiFi.status() != WL_CONNECTED) {\n    connectWiFi();\n  }\n\n  // ====================================================\n  // MQTT RECONNECT\n  // ====================================================\n  if (!mqttClient.connected()) {\n    reconnectMQTT();\n  }\n\n  // ====================================================\n  // READ ALL VL53L0X SENSORS\n  // ====================================================\n  readAllSensors();\n\n  // ====================================================\n  // READ DHT22\n  // ====================================================\n  readDHT22();\n\n  // ====================================================\n  // RESET DAILY DOSE FLAGS AT MIDNIGHT\n  // ====================================================\n  if (now.hour() == 0 \u0026\u0026 now.minute() == 0 \u0026\u0026 now.second() == 0) {\n    for (int i = 0; i \u003c 6; i++) {\n      doseTriggered[i] = false;\n    }\n  }\n\n  // ====================================================\n  // PUBLISH STATUS EVERY 30 SECONDS\n  // ====================================================\n  if (millis() - lastMQTTPublish \u003e= MQTT_PUBLISH_INTERVAL) {\n    lastMQTTPublish = millis();\n    publishStatus();\n  }\n\n  // ====================================================\n  // EMERGENCY SENSOR S7\n  // ====================================================\n  if (activeReminder == -1 \u0026\u0026\n      displayState == MAIN_SCREEN \u0026\u0026\n      !emergencyTriggered)\n  {\n    if (previousDistance7 \u003c= MEDICINE_THRESHOLD \u0026\u0026\n        distance7 \u003e MEDICINE_THRESHOLD)\n    {\n      emergencyTriggered = true;\n      displayState = EMERGENCY_TAKEN;\n      messageStartTime = millis();\n      turnOnLED(6);\n      digitalWrite(BUZZER, HIGH);\n\n      publishEvent(\"emergency_taken\", 7);\n\n      lcd.clear();\n      Serial.println(\"================================\");\n      Serial.println(\"ATTENTION! EMERGENCY DOSE TAKEN\");\n      Serial.println(\"================================\");\n    }\n  }\n\n  previousDistance7 = distance7;\n\n  // ====================================================\n  // EMERGENCY STATE\n  // ====================================================\n  if (displayState == EMERGENCY_TAKEN) {\n    if (millis() - messageStartTime \u003c EMERGENCY_MESSAGE_TIME) {\n      digitalWrite(BUZZER, HIGH);\n      turnOnLED(6);\n      if (millis() - lastLCDUpdate \u003e= 500) {\n        lastLCDUpdate = millis();\n        displayEmergencyTaken();\n      }\n    } else {\n      digitalWrite(BUZZER, LOW);\n      turnOffAllLEDs();\n      displayState = MAIN_SCREEN;\n      emergencyTriggered = false;\n      lcd.clear();\n    }\n    return;\n  }\n\n  // ====================================================\n  // CHECK NORMAL DOSE REMINDERS\n  // ====================================================\n  if (activeReminder == -1 \u0026\u0026 displayState == MAIN_SCREEN) {\n    for (int i = 0; i \u003c 6; i++) {\n      if (!doseEnabled[i]) continue;\n\n      if (now.hour() == doseHour[i] \u0026\u0026\n          now.minute() == doseMinute[i] \u0026\u0026\n          !doseTriggered[i])\n      {\n        activeReminder = i;\n        doseTriggered[i] = true;\n        displayState = MEDICINE_REMINDER;\n        medicineTakenCount = 0;\n\n        turnOnLED(doseSensor[i]);\n        digitalWrite(BUZZER, HIGH);\n\n        publishEvent(\"reminder_started\", doseSensor[i] + 1);\n\n        lcd.clear();\n        Serial.print(\"REMINDER -\u003e SENSOR \");\n        Serial.print(doseSensor[i] + 1);\n        Serial.println(\" TAKE MEDICINE\");\n        break;\n      }\n    }\n  }\n\n  // ====================================================\n  // NORMAL MEDICINE REMINDER\n  // ====================================================\n  if (displayState == MEDICINE_REMINDER) {\n    int sensorNumber = doseSensor[activeReminder];\n    int activeDistance = getSensorDistance(sensorNumber);\n\n    if (activeDistance \u003e MEDICINE_THRESHOLD) {\n      medicineTakenCount++;\n\n      Serial.print(\"Taken confirmation: \");\n      Serial.print(medicineTakenCount);\n      Serial.print(\"/\");\n      Serial.println(REQUIRED_TAKEN_READINGS);\n\n      if (medicineTakenCount \u003e= REQUIRED_TAKEN_READINGS) {\n        digitalWrite(BUZZER, LOW);\n        turnOnLED(sensorNumber);\n        displayState = MEDICINE_TAKEN;\n        messageStartTime = millis();\n        medicineTakenCount = 0;\n\n        publishEvent(\"taken\", sensorNumber + 1);\n\n        lcd.clear();\n        Serial.print(\"SENSOR \");\n        Serial.print(sensorNumber + 1);\n        Serial.println(\" -\u003e MEDICINE TAKEN\");\n      }\n    } else {\n      medicineTakenCount = 0;\n      digitalWrite(BUZZER, HIGH);\n      turnOnLED(sensorNumber);\n\n      if (millis() - lastLCDUpdate \u003e= 500) {\n        lastLCDUpdate = millis();\n        displayMedicineReminder();\n      }\n    }\n    return;\n  }\n\n  // ====================================================\n  // MEDICINE TAKEN STATE\n  // ====================================================\n  if (displayState == MEDICINE_TAKEN) {\n    digitalWrite(BUZZER, LOW);\n    turnOnLED(doseSensor[activeReminder]);\n\n    if (millis() - messageStartTime \u003c MEDICINE_MESSAGE_TIME) {\n      if (millis() - lastLCDUpdate \u003e= 500) {\n        lastLCDUpdate = millis();\n        displayMedicineTaken();\n      }\n    } else {\n      turnOffAllLEDs();\n      activeReminder = -1;\n      displayState = MAIN_SCREEN;\n      lcd.clear();\n      Serial.println(\"Medicine taken message finished.\");\n    }\n    return;\n  }\n\n  // ====================================================\n  // MAIN SCREEN\n  // ====================================================\n  if (displayState == MAIN_SCREEN) {\n    digitalWrite(BUZZER, LOW);\n    turnOffAllLEDs();\n\n    if (millis() - lastLCDUpdate \u003e= 500) {\n      lastLCDUpdate = millis();\n      displayMainScreen(now);\n    }\n  }\n\n  // ====================================================\n  // SERIAL MONITOR\n  // ====================================================\n  Serial.print(\"Time: \");\n  if (now.hour() \u003c 10) Serial.print(\"0\");\n  Serial.print(now.hour());\n  Serial.print(\":\");\n  if (now.minute() \u003c 10) Serial.print(\"0\");\n  Serial.print(now.minute());\n  Serial.print(\":\");\n  if (now.second() \u003c 10) Serial.print(\"0\");\n  Serial.print(now.second());\n  Serial.print(\" | T:\");\n  Serial.print(temperature, 1);\n  Serial.print(\"C H:\");\n  Serial.print(humidity, 1);\n  Serial.print(\"% | MQTT:\");\n  Serial.print(mqttClient.connected() ? \"Y\" : \"N\");\n  Serial.print(\" | \");\n  Serial.print(\"S1:\"); Serial.print(distance1);\n  Serial.print(\" S2:\"); Serial.print(distance2);\n  Serial.print(\" S3:\"); Serial.print(distance3);\n  Serial.print(\" S4:\"); Serial.print(distance4);\n  Serial.print(\" S5:\"); Serial.print(distance5);\n  Serial.print(\" S6:\"); Serial.print(distance6);\n  Serial.print(\" S7:\"); Serial.println(distance7);\n\n  delay(500);\n}",
+                                                           "name":  "sketch.ino"
+                                                       }
+                                                   ]
+                   },
+    "name":  "care-cube",
+    "components":  [
+                       {
+                           "y":  150,
+                           "properties":  {
+
+                                          },
+                           "metadataId":  "lcd2004-i2c",
+                           "id":  "lcd",
+                           "x":  450
+                       },
+                       {
+                           "y":  150,
+                           "properties":  {
+
+                                          },
+                           "metadataId":  "ds1307",
+                           "id":  "rtc",
+                           "x":  750
+                       },
+                       {
+                           "y":  150,
+                           "properties":  {
+
+                                          },
+                           "metadataId":  "dht22",
+                           "id":  "dht",
+                           "x":  880
+                       },
+                       {
+                           "y":  520,
+                           "properties":  {
+
+                                          },
+                           "metadataId":  "buzzer",
+                           "id":  "buzzer",
+                           "x":  1090
+                       },
+                       {
+                           "y":  690,
+                           "properties":  {
+                                              "value":  "330"
+                                          },
+                           "metadataId":  "resistor",
+                           "id":  "r1",
+                           "x":  390
+                       },
+                       {
+                           "y":  690,
+                           "properties":  {
+                                              "value":  "330"
+                                          },
+                           "metadataId":  "resistor",
+                           "id":  "r2",
+                           "x":  470
+                       },
+                       {
+                           "y":  690,
+                           "properties":  {
+                                              "value":  "330"
+                                          },
+                           "metadataId":  "resistor",
+                           "id":  "r3",
+                           "x":  550
+                       },
+                       {
+                           "y":  690,
+                           "properties":  {
+                                              "value":  "330"
+                                          },
+                           "metadataId":  "resistor",
+                           "id":  "r4",
+                           "x":  630
+                       },
+                       {
+                           "y":  690,
+                           "properties":  {
+                                              "value":  "330"
+                                          },
+                           "metadataId":  "resistor",
+                           "id":  "r5",
+                           "x":  710
+                       },
+                       {
+                           "y":  690,
+                           "properties":  {
+                                              "value":  "330"
+                                          },
+                           "metadataId":  "resistor",
+                           "id":  "r6",
+                           "x":  790
+                       },
+                       {
+                           "y":  690,
+                           "properties":  {
+                                              "value":  "330"
+                                          },
+                           "metadataId":  "resistor",
+                           "id":  "r7",
+                           "x":  870
+                       },
+                       {
+                           "y":  780,
+                           "properties":  {
+                                              "color":  "red"
+                                          },
+                           "metadataId":  "led",
+                           "id":  "led1",
+                           "x":  390
+                       },
+                       {
+                           "y":  780,
+                           "properties":  {
+                                              "color":  "orange"
+                                          },
+                           "metadataId":  "led",
+                           "id":  "led2",
+                           "x":  470
+                       },
+                       {
+                           "y":  780,
+                           "properties":  {
+                                              "color":  "yellow"
+                                          },
+                           "metadataId":  "led",
+                           "id":  "led3",
+                           "x":  550
+                       },
+                       {
+                           "y":  780,
+                           "properties":  {
+                                              "color":  "green"
+                                          },
+                           "metadataId":  "led",
+                           "id":  "led4",
+                           "x":  630
+                       },
+                       {
+                           "y":  780,
+                           "properties":  {
+                                              "color":  "blue"
+                                          },
+                           "metadataId":  "led",
+                           "id":  "led5",
+                           "x":  710
+                       },
+                       {
+                           "y":  780,
+                           "properties":  {
+                                              "color":  "purple"
+                                          },
+                           "metadataId":  "led",
+                           "id":  "led6",
+                           "x":  790
+                       },
+                       {
+                           "y":  780,
+                           "properties":  {
+                                              "color":  "red"
+                                          },
+                           "metadataId":  "led",
+                           "id":  "led7",
+                           "x":  870
+                       }
+                   ],
+    "activeBoardId":  "esp32-devkit-c-v4",
+    "boards":  [
+                   {
+                       "libraries":  [
+                                         "PubSubClient",
+                                         "ArduinoJson",
+                                         "RTClib",
+                                         "DHT sensor library",
+                                         "LiquidCrystal_I2C",
+                                         "VL53L0X"
+                                     ],
+                       "id":  "esp32-devkit-c-v4",
+                       "y":  360,
+                       "activeFileGroupId":  "group-esp32-devkit-c-v4",
+                       "name":  "Care Cube ESP32",
+                       "languageMode":  "arduino",
+                       "x":  450,
+                       "boardKind":  "esp32-devkit-c-v4"
+                   }
+               ]
+}
