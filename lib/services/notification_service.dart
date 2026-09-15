@@ -13,6 +13,9 @@ class NotificationService {
     const android = AndroidInitializationSettings('@mipmap/ic_launcher');
     const settings = InitializationSettings(android: android);
     await _plugin.initialize(settings);
+    final androidImpl = _plugin.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
+    await androidImpl?.requestNotificationsPermission();
   }
 
   /// Show a notification when a reminder/emergency event lands even if the

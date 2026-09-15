@@ -45,12 +45,27 @@ class _SignUpScreenState extends State<SignUpScreen> {
         },
       );
       final user = res.user;
-      // A database trigger (handle_new_user) auto-creates the profile row.
-      // If the signup returned a live session (email confirmation off), the
-      // upsert below is guaranteed to pass RLS because auth.uid() is set;
-      // if confirmation is on there is no session yet, so we skip it and
-      // rely on the trigger.
-      if (res.session != null && user != null) {
+      final session = res.session;
+
+      // When email confirmation is enabled, signUp returns the user with a
+      // null session. Do NOT auto-login in that case; send the user to the
+      // "verify your email" screen instead.
+      if (session == null) {
+        if (!mounted) return;
+        setState(() => _loading = false);
+        Navigator.pushReplacementNamed(
+          context,
+          '/verify',
+          arguments: _email.text.trim(),
+        );
+        return;
+      }
+
+      // Confirmed signup (email confirmation disabled): a live session
+      // exists, so auth.uid() is set and the profile upsert passes RLS.
+      // A database trigger (handle_new_user) auto-creates the profile row
+      // regardless, so this upsert is just a safety net.
+      if (user != null) {
         await SupabaseService.upsertProfile({
           'id': user.id,
           'role': _role,

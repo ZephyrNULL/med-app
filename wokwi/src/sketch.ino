@@ -8,6 +8,12 @@
 #include <DHT.h>
 #include <ArduinoJson.h>
 
+#ifdef PROVISION_MODE
+#include <Preferences.h>
+#include <DNSServer.h>
+#include <WebServer.h>
+#endif
+
 // ======================================================
 // WIFI CREDENTIALS
 // ======================================================
@@ -28,6 +34,13 @@ const char* MQTT_CLIENT_ID = "carecube-001-esp32";
 // ======================================================
 const char* DEVICE_ID = "carecube-001";
 
+// Simulated box publishes status/events on ALL of these device
+// topic prefixes, so whichever device_id the mobile app has paired
+// (e.g. the default "carecube-001" or a test box like "caregh") it
+// receives the live temperature/humidity stream.
+const char* DEVICE_IDS[] = { "carecube-001", "caregh" };
+const int  DEVICE_ID_COUNT = 2;
+
 // ======================================================
 // MQTT TOPICS
 // ======================================================
@@ -35,6 +48,13 @@ String topicScheduleSet;
 String topicStatus;
 String topicEvent;
 String topicAlarmStop;
+
+// ======================================================
+// BUILD THE TOPICS FOR A GIVEN DEVICE ID
+// ======================================================
+String topicFor(int i, const char* suffix) {
+  return String("carecube/") + DEVICE_IDS[i] + suffix;
+}
 
 // ======================================================
 // OBJECTS
@@ -272,6 +292,234 @@ void readDHT22() {
 }
 
 // ======================================================
+// SOFT-AP WIFI PROVISIONING (real hardware only)
+//
+// First boot (or when stored credentials fail): the box opens its own
+// network "CareCube-Setup". Connect a phone to it, a captive portal page
+// opens at http://192.168.4.1 where you enter your home WiFi. The box
+// stores the credentials in NVS (Preferences) and reboots — no need to
+// re-flash to change WiFi.
+// ======================================================
+#ifdef PROVISION_MODE
+
+const char* AP_SSID     = "CareCube-Setup";
+const char* AP_PASSWORD = "";    // open network so the phone connects easily
+
+Preferences provisionPrefs;
+WebServer   portalServer(80);
+DNSServer   portalDns;
+
+const byte PORTAL_DNS_PORT = 53;
+IPAddress portalIP(192, 168, 4, 1);
+IPAddress portalNetmask(255, 255, 255, 0);
+
+bool loadSavedWifi(String &ssid, String &pass) {
+  provisionPrefs.begin("carecube", true);
+  String s = provisionPrefs.getString("ssid", "");
+  bool ok = (s.length() > 0);
+  if (ok) {
+    ssid = s;
+    pass = provisionPrefs.getString("pass", "");
+  }
+  provisionPrefs.end();
+  return ok;
+}
+
+void saveWifi(const String &ssid, const String &pass) {
+  provisionPrefs.begin("carecube", false);
+  provisionPrefs.putString("ssid", ssid);
+  provisionPrefs.putString("pass", pass);
+  provisionPrefs.end();
+  Serial.println("WiFi credentials saved to NVS");
+}
+
+bool tryConnectWifi(const String &ssid, const String &pass) {
+  Serial.print("Trying WiFi: ");
+  Serial.println(ssid);
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Connecting...");
+  lcd.setCursor(0, 1);
+  lcd.print(ssid.substring(0, 19));
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid.c_str(), pass.c_str());
+
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 40) {
+    delay(500);
+    Serial.print(".");
+    lcd.setCursor(attempts % 20, 2);
+    lcd.print(".");
+    attempts++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println();
+    Serial.print("WiFi connected! IP: ");
+    Serial.println(WiFi.localIP());
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("WiFi Connected!");
+    lcd.setCursor(0, 1);
+    lcd.print(WiFi.localIP().toString());
+    delay(1500);
+    return true;
+  }
+
+  Serial.println();
+  Serial.println("WiFi connection failed");
+  return false;
+}
+
+String portalPage(String statusMsg) {
+  String page = R"page(
+<!DOCTYPE html><html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Care Cube WiFi Setup</title>
+<style>
+ body{font-family:Verdana,Arial,sans-serif;background:#0f172a;color:#e2e8f0;
+      display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}
+ .card{background:#1e293b;padding:24px;border-radius:12px;width:92%;max-width:420px;
+       box-shadow:0 8px 24px rgba(0,0,0,.4)}
+ h1{font-size:20px;margin:0 0 6px}
+ p.hint{font-size:13px;color:#94a3b8;margin:0 0 16px}
+ label{display:block;font-size:12px;margin:12px 0 4px;color:#cbd5e1}
+ select,input[type=text],input[type=password]{width:100%;padding:10px;border:1px solid #475569;
+   border-radius:6px;background:#0f172a;color:#e2e8f0;font-size:14px;box-sizing:border-box}
+ button{width:100%;margin-top:18px;padding:12px;border:0;border-radius:6px;background:#22c55e;
+   color:#052e16;font-size:15px;font-weight:bold;cursor:pointer}
+ .msg{font-size:13px;color:#fde68a;padding:8px 0}
+</style></head><body>
+<div class="card">
+<h1>Care Cube WiFi Setup</h1>
+<p class="hint">Your phone is connected to the <b>CareCube-Setup</b> network.
+Choose your home WiFi below (or type its exact name) and the box will save
+it and reconnect automatically.</p>
+<form method="POST" action="/save">
+<label for="ssid">WiFi name (SSID)</label>
+<select id="ssid" name="ssid">)page";
+
+  int n = WiFi.scanNetworks();
+  page += "<option value=\"\">-- choose a network --</option>";
+  if (n >= 0) {
+    for (int i = 0; i < n; i++) {
+      String name = WiFi.SSID(i);
+      page += "<option value=\"" + name + "\">" + name + "</option>";
+    }
+  }
+  page += "</select>";
+
+  page += R"page(
+<label for="ssid_manual">or type the exact WiFi name</label>
+<input type="text" id="ssid_manual" name="ssid_manual"
+       placeholder="MyHomeWiFi" autocomplete="off">
+<label for="pass">Password</label>
+<input type="password" id="pass" name="pass" placeholder="WiFi password">
+<button type="submit">Save and Connect</button>
+</form>)page";
+
+  if (statusMsg.length() > 0) {
+    page += "<div class=\"msg\">" + statusMsg + "</div>";
+  }
+  page += R"page(
+</div></body></html>)page";
+  return page;
+}
+
+void startProvisionPortal(String statusMsg) {
+  Serial.println("==================================");
+  Serial.println(" WIFI SETUP MODE");
+  Serial.print(" Join AP: ");
+  Serial.println(AP_SSID);
+  Serial.println(" then open http://192.168.4.1");
+  Serial.println("==================================");
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("  WIFI SETUP MODE");
+  lcd.setCursor(0, 1);
+  lcd.print("Join network:");
+  lcd.setCursor(0, 2);
+  lcd.print(AP_SSID);
+  lcd.setCursor(0, 3);
+  lcd.print("open 192.168.4.1");
+
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAPdisconnect(true);
+  delay(200);
+  WiFi.softAPConfig(portalIP, portalIP, portalNetmask);
+  WiFi.softAP(AP_SSID, AP_PASSWORD);
+  delay(200);
+
+  portalDns.start(PORTAL_DNS_PORT, "*", portalIP);
+
+  portalServer.on("/", HTTP_GET, [&]() {
+    portalServer.send(200, "text/html", portalPage(statusMsg));
+  });
+
+  portalServer.on("/save", HTTP_POST, [&]() {
+    String ssid = portalServer.arg("ssid_manual");
+    if (ssid.length() == 0) {
+      ssid = portalServer.arg("ssid");
+    }
+    String pass = portalServer.arg("pass");
+    ssid.trim();
+    pass.trim();
+
+    if (ssid.length() == 0) {
+      portalServer.send(200, "text/html",
+          portalPage("Please choose or type a WiFi name."));
+      return;
+    }
+
+    saveWifi(ssid, pass);
+    portalServer.send(200, "text/html",
+        String("Saved! The box is reconnecting to <b>") + ssid +
+        "</b>... You can close this page.");
+    delay(1500);
+    ESP.restart();
+  });
+
+  portalServer.onNotFound([&]() {
+    portalServer.sendHeader("Location", "/", true);
+    portalServer.send(302, "text/plain", "");
+  });
+
+  portalServer.begin();
+}
+
+void provisionConnect() {
+  String ssid, pass;
+  bool configured = loadSavedWifi(ssid, pass);
+
+  if (configured && tryConnectWifi(ssid, pass)) {
+    return;
+  }
+  if (configured) {
+    Serial.println("Stored WiFi failed - opening setup portal");
+  }
+
+  String status = configured
+      ? "Stored credentials could not connect. Enter your WiFi below."
+      : "";
+
+  startProvisionPortal(status);
+
+  // Serve the portal until the user saves new credentials, which reboots
+  // the box into the normal connect path.
+  while (true) {
+    portalDns.processNextRequest();
+    portalServer.handleClient();
+    delay(2);
+  }
+}
+
+#endif // PROVISION_MODE
+
+// ======================================================
 // WIFI CONNECT
 // ======================================================
 void connectWiFi() {
@@ -328,13 +576,16 @@ void reconnectMQTT() {
   if (mqttClient.connect(MQTT_CLIENT_ID, MQTT_USERNAME, MQTT_PASSWORD)) {
     Serial.println("connected!");
 
-    mqttClient.subscribe(topicScheduleSet.c_str());
-    mqttClient.subscribe(topicAlarmStop.c_str());
-
-    Serial.print("Subscribed to: ");
-    Serial.println(topicScheduleSet);
-    Serial.print("Subscribed to: ");
-    Serial.println(topicAlarmStop);
+    for (int i = 0; i < DEVICE_ID_COUNT; i++) {
+      String tSche = topicFor(i, "/schedule/set");
+      String tStop = topicFor(i, "/alarm/stop");
+      mqttClient.subscribe(tSche.c_str());
+      mqttClient.subscribe(tStop.c_str());
+      Serial.print("Subscribed to: ");
+      Serial.println(tSche);
+      Serial.print("Subscribed to: ");
+      Serial.println(tStop);
+    }
   } else {
     Serial.print("failed, rc=");
     Serial.println(mqttClient.state());
@@ -357,10 +608,17 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
   String topicStr = String(topic);
 
+  bool isScheduleSet = false;
+  bool isAlarmStop   = false;
+  for (int i = 0; i < DEVICE_ID_COUNT; i++) {
+    if (topicStr == topicFor(i, "/schedule/set")) isScheduleSet = true;
+    if (topicStr == topicFor(i, "/alarm/stop"))  isAlarmStop   = true;
+  }
+
   // ==================================================
   // SCHEDULE UPDATE
   // ==================================================
-  if (topicStr == topicScheduleSet) {
+  if (isScheduleSet) {
     StaticJsonDocument<1024> doc;
     DeserializationError error = deserializeJson(doc, message);
 
@@ -376,7 +634,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         continue;
       }
 
-      doseSensor[i]  = doc[i]["sensor_number"] | (i + 1);
+      doseSensor[i]  = (doc[i]["sensor_number"] | (i + 1)) - 1;
       doseHour[i]    = doc[i]["hour"] | 12;
       doseMinute[i]  = doc[i]["minute"] | 0;
       doseEnabled[i] = doc[i]["enabled"] | false;
@@ -402,7 +660,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   // ==================================================
   // ALARM STOP (caregiver only)
   // ==================================================
-  if (topicStr == topicAlarmStop) {
+  if (isAlarmStop) {
     if (displayState == MEDICINE_REMINDER || displayState == EMERGENCY_TAKEN) {
       Serial.println("Alarm stopped by caregiver");
 
@@ -430,17 +688,19 @@ void publishStatus() {
   doc["device_id"]   = DEVICE_ID;
   doc["temperature"] = temperature;
   doc["humidity"]    = humidity;
-  doc["timestamp"]   = millis() / 1000;
+  doc["timestamp"]   = rtc.now().unixtime();
 
   char buffer[256];
   serializeJson(doc, buffer);
 
-  mqttClient.publish(topicStatus.c_str(), buffer, true);
-
-  Serial.print("MQTT -> [");
-  Serial.print(topicStatus);
-  Serial.print("] ");
-  Serial.println(buffer);
+  for (int i = 0; i < DEVICE_ID_COUNT; i++) {
+    String t = topicFor(i, "/status");
+    mqttClient.publish(t.c_str(), buffer, true);
+    Serial.print("MQTT -> [");
+    Serial.print(t);
+    Serial.print("] ");
+    Serial.println(buffer);
+  }
 }
 
 // ======================================================
@@ -453,17 +713,19 @@ void publishEvent(const char* eventType, int sensorNumber) {
   doc["device_id"]     = DEVICE_ID;
   doc["type"]          = eventType;
   doc["sensor_number"] = sensorNumber;
-  doc["timestamp"]     = millis() / 1000;
+  doc["timestamp"]     = rtc.now().unixtime();
 
   char buffer[256];
   serializeJson(doc, buffer);
 
-  mqttClient.publish(topicEvent.c_str(), buffer);
-
-  Serial.print("MQTT -> [");
-  Serial.print(topicEvent);
-  Serial.print("] ");
-  Serial.println(buffer);
+  for (int i = 0; i < DEVICE_ID_COUNT; i++) {
+    String t = topicFor(i, "/event");
+    mqttClient.publish(t.c_str(), buffer);
+    Serial.print("MQTT -> [");
+    Serial.print(t);
+    Serial.print("] ");
+    Serial.println(buffer);
+  }
 }
 
 // ======================================================
@@ -733,7 +995,11 @@ void setup() {
   // ====================================================
   // WIFI
   // ====================================================
+#ifdef PROVISION_MODE
+  provisionConnect();
+#else
   connectWiFi();
+#endif
 
   // ====================================================
   // MQTT

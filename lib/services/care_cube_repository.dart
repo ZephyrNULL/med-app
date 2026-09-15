@@ -32,6 +32,14 @@ class CareCubeRepository extends ChangeNotifier {
 
   bool _mqttConnected = false;
 
+  /// Phone-local alarm scheduler so doses still ring even when the box
+  /// (or the Wokwi sim) is offline. Scans enabled schedules every tick.
+  Timer? _scheduleTimer;
+
+  /// Daily keys ("yyyy-M-d|sensor") for which the phone already fired a
+  /// local reminder, so the scan is idempotent per dose per day.
+  final Set<String> _localAlarmKeys = {};
+
   String? get boxId => _boxId;
   String? get deviceId => _deviceId;
   BoxReading? get latestReading => _latestReading;
@@ -102,9 +110,60 @@ class CareCubeRepository extends ChangeNotifier {
       ..add(_mqtt.connectionStream.listen((c) {
         _mqttConnected = c;
         notifyListeners();
+        // On (re)connect, re-push the current schedule so the firmware's
+        // copy stays in sync even if it was offline when doses changed.
+        if (c && _schedules.isNotEmpty) {
+          _mqtt.publishSchedule(_schedules);
+        }
       }));
 
     await _mqtt.connect(deviceId);
+    _startScheduleScanner();
+  }
+
+  /// Polls enabled schedules; fires a local reminder when a dose time is
+  /// reached that hasn't already been triggered today.
+  void _startScheduleScanner() {
+    _scheduleTimer?.cancel();
+    _scheduleTimer = Timer.periodic(const Duration(seconds: 20), (_) {
+      _scanSchedules();
+    });
+  }
+
+  void _scanSchedules() {
+    if (_deviceId == null || _schedules.isEmpty) return;
+    if (AlarmSoundService().isRinging) return;
+
+    final now = DateTime.now();
+    for (final s in _schedules) {
+      if (!s.enabled) continue;
+      if (s.hour != now.hour || s.minute != now.minute) continue;
+
+      final key = '${now.year}-${now.month}-${now.day}|${s.sensorNumber}';
+      if (!_localAlarmKeys.add(key)) continue; // already triggered today
+
+      final alreadyTaken = _events.any((e) =>
+          e.type == 'taken' &&
+          e.sensorNumber == s.sensorNumber &&
+          _isSameDay(e.occurredAt, now));
+      if (alreadyTaken) continue;
+
+      debugPrint('[repo] local dose alarm sensor=${s.sensorNumber} '
+          'at ${s.timeLabel}');
+      _handleLocalEvent(
+        DoseEvent(
+          type: 'reminder_started',
+          sensorNumber: s.sensorNumber,
+          occurredAt: DateTime.now(),
+        ),
+      );
+    }
+  }
+
+  bool _isSameDay(DateTime a, DateTime b) {
+    final la = a.toLocal();
+    final lb = b.toLocal();
+    return la.year == lb.year && la.month == lb.month && la.day == lb.day;
   }
 
   Future<void> _onStatus(BoxReading reading) async {
@@ -119,6 +178,13 @@ class CareCubeRepository extends ChangeNotifier {
   }
 
   Future<void> _onEvent(DoseEvent event) async {
+    _handleLocalEvent(event, persist: true);
+  }
+
+  /// Shared handler for incoming (MQTT) and locally-originated events:
+  /// updates the feed, drives the phone alarm + notification, and
+  /// optionally mirrors the event into Supabase.
+  void _handleLocalEvent(DoseEvent event, {bool persist = false}) {
     _events.insert(0, event);
     if (_events.length > 200) {
       _events.removeRange(200, _events.length);
@@ -126,11 +192,22 @@ class CareCubeRepository extends ChangeNotifier {
     _lastSynced = DateTime.now();
     notifyListeners();
 
+    // A resolution event clears today's local-trigger key for that sensor
+    // so a later (manual) re-ring is possible; the per-day + per-minute
+    // checks elsewhere prevent duplicates.
+    if (!event.isActiveAlarm) {
+      final now = DateTime.now();
+      _localAlarmKeys.remove(
+          '${now.year}-${now.month}-${now.day}|${event.sensorNumber}');
+    }
+
     // Phone-side alarm: ring + notify when the box starts an alarm, and
     // ring off as soon as an event resolves it (taken / stopped / missed).
     if (event.isActiveAlarm) {
       final isEmergency = event.type == 'emergency_taken';
-      AlarmSoundService().startAlarm();
+      if (!AlarmSoundService().isRinging) {
+        AlarmSoundService().startAlarm();
+      }
       NotificationService().showAlarmNotification(
         title: isEmergency ? 'Emergency dose taken' : 'Time for your dose',
         body: 'Sensor bay ${event.sensorNumber} is ringing. '
@@ -140,10 +217,11 @@ class CareCubeRepository extends ChangeNotifier {
       AlarmSoundService().stopAlarm();
     }
 
-    try {
-      await SupabaseService.insertDoseEvent(event.toDbMap(_boxId!));
-    } catch (e) {
-      debugPrint('Failed to persist event: $e');
+    if (persist && _boxId != null) {
+      SupabaseService.insertDoseEvent(event.toDbMap(_boxId!))
+          .catchError((e) {
+        debugPrint('Failed to persist event: $e');
+      });
     }
   }
 
@@ -239,6 +317,9 @@ class CareCubeRepository extends ChangeNotifier {
   /// re-initialized by `loadForPatient` after a role/patient change.
   Future<void> reset() async {
     AlarmSoundService().stopAlarm();
+    _scheduleTimer?.cancel();
+    _scheduleTimer = null;
+    _localAlarmKeys.clear();
     for (final s in _subs) {
       await s.cancel();
     }
@@ -256,6 +337,9 @@ class CareCubeRepository extends ChangeNotifier {
 
   @override
   void dispose() {
+    _scheduleTimer?.cancel();
+    _scheduleTimer = null;
+    _localAlarmKeys.clear();
     for (final s in _subs) {
       s.cancel();
     }

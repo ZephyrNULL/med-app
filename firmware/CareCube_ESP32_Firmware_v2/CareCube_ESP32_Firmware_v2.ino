@@ -9,6 +9,7 @@
 #include <RTClib.h>
 #include <DHT.h>
 #include <ArduinoJson.h>
+#include <time.h>
 
 // ======================================================
 // WIFI PROVISIONING - NO HARDCODED CREDENTIALS
@@ -515,7 +516,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         continue;
       }
 
-      doseSensor[i]  = doc[i]["sensor_number"] | (i + 1);
+      doseSensor[i]  = (doc[i]["sensor_number"] | (i + 1)) - 1; // app sends bay 1..6 -> store 0-based
       doseHour[i]    = doc[i]["hour"] | 12;
       doseMinute[i]  = doc[i]["minute"] | 0;
       doseEnabled[i] = doc[i]["enabled"] | false;
@@ -569,7 +570,7 @@ void publishStatus() {
   doc["device_id"]   = deviceId;
   doc["temperature"] = temperature;
   doc["humidity"]    = humidity;
-  doc["timestamp"]   = millis() / 1000;
+  doc["timestamp"]   = (uint32_t)nowUnix();
 
   char buffer[256];
   serializeJson(doc, buffer);
@@ -592,7 +593,7 @@ void publishEvent(const char* eventType, int sensorNumber) {
   doc["device_id"]     = deviceId;
   doc["type"]          = eventType;
   doc["sensor_number"] = sensorNumber;
-  doc["timestamp"]     = millis() / 1000;
+  doc["timestamp"]     = (uint32_t)nowUnix();
 
   char buffer[256];
   serializeJson(doc, buffer);
@@ -603,6 +604,31 @@ void publishEvent(const char* eventType, int sensorNumber) {
   Serial.print(topicEvent);
   Serial.print("] ");
   Serial.println(buffer);
+}
+
+// ======================================================
+// UNIX TIME
+// Real wall-clock epoch so the app stores correct event dates.
+// Fallbacks to the DS1307 if NTP has not synced yet.
+// ======================================================
+time_t nowUnix() {
+  time_t t = time(nullptr);
+  if (t < 1700000000UL) {
+    return rtc.now().unixtime();
+  }
+  return t;
+}
+
+void syncRtcFromNtp() {
+  configTime(0, 0, "pool.ntp.org", "time.google.com");
+  struct tm tmv;
+  if (getLocalTime(&tmv, 5000)) {
+    rtc.adjust(DateTime(tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                        tmv.tm_hour, tmv.tm_min, tmv.tm_sec));
+    Serial.println("RTC synced from NTP");
+  } else {
+    Serial.println("NTP sync failed - keeping RTC time");
+  }
 }
 
 // ======================================================
@@ -759,6 +785,13 @@ void setup() {
   mqttClient.setBufferSize(1024);
   if (WiFi.status() == WL_CONNECTED) {
     reconnectMQTT();
+  }
+
+  // ====================================================
+  // KEEP RTC ACCURATE (dose times + event timestamps)
+  // ====================================================
+  if (WiFi.status() == WL_CONNECTED) {
+    syncRtcFromNtp();
   }
 
   // ====================================================

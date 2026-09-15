@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../services/alarm_sound_service.dart';
 import '../services/app_state.dart';
 import '../services/supabase_service.dart';
+import '../services/system_ringtone_service.dart';
 import '../widgets/common.dart';
 import 'edit_profile_screen.dart';
 
@@ -143,6 +144,8 @@ class ProfileScreen extends StatelessWidget {
                       ],
                     ),
                   ),
+                  const SizedBox(height: 12),
+                  const _ConnectBoxCard(),
                   const SizedBox(height: 16),
 
                   // Notification & alarm sound
@@ -236,6 +239,31 @@ class ProfileScreen extends StatelessWidget {
 
   Widget _divider() => const Divider(height: 1, indent: 56);
 
+  /// Connect the app to an ESP32 box by typing its device id.
+  static Future<void> _connectBox(BuildContext context) async {
+    final appState = context.read<AppState>();
+    final deviceIdText = await showPairBoxDialog(context);
+    if (deviceIdText == null || deviceIdText.isEmpty) return;
+    if (!context.mounted) return;
+
+    final user = SupabaseService.currentUser;
+    if (user == null) return;
+    try {
+      await SupabaseService.pairBox(
+        patientId: user.id,
+        deviceId: deviceIdText,
+      );
+      await appState.repo.loadForPatient(user.id);
+      if (context.mounted) {
+        showAppToast(context, 'Connected to box $deviceIdText');
+      }
+    } catch (e) {
+      if (context.mounted) {
+        showAppToast(context, 'Connection failed: $e', destructive: true);
+      }
+    }
+  }
+
   Widget _infoTile(
       BuildContext context, IconData icon, String label, String value) {
     return ListTile(
@@ -256,6 +284,73 @@ class ProfileScreen extends StatelessWidget {
   }
 }
 
+class _ConnectBoxCard extends StatelessWidget {
+  const _ConnectBoxCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final repo = context.watch<AppState>().repo;
+    final connected = repo.mqttConnected;
+    final deviceId = repo.deviceId;
+
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  connected ? Icons.sensors : Icons.add_link,
+                  color: connected ? Colors.green.shade700 : scheme.primary,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    connected ? 'Box connected' : 'Connect to your box',
+                    style: theme.textTheme.titleSmall
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Your phone talks to the ESP32 medicine box over MQTT to '
+              'receive live temperature, humidity and dose alerts. '
+              'Type the device id printed on the sticker on the bottom of '
+              'the box to pair it with this account. Once connected, live '
+              'readings appear on the Home tab and reminders ring '
+              'automatically at dose time.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                  color: scheme.onSurfaceVariant, height: 1.4),
+            ),
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: () => ProfileScreen._connectBox(context),
+              icon: const Icon(Icons.link),
+              label: Text(
+                  connected ? 'Pair a different box' : 'Connect to ESP32 box'),
+            ),
+            if (deviceId != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Current box: $deviceId',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: scheme.onSurfaceVariant),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _AlarmSettingsCard extends StatelessWidget {
   const _AlarmSettingsCard();
 
@@ -270,11 +365,7 @@ class _AlarmSettingsCard extends StatelessWidget {
           ValueListenableBuilder<String>(
             valueListenable: alarms.selectedSoundNotifier,
             builder: (context, selectedId, _) {
-              final current = AlarmSoundService.sounds
-                  .where((s) => s.id == selectedId)
-                  .toList();
-              final currentName =
-                  current.isEmpty ? 'Classic beeps' : current.first.name;
+              final currentName = alarms.selectedSoundName;
               return ListTile(
                 leading: const Icon(Icons.notifications_active_outlined),
                 title: const Text('Alarm sound'),
@@ -314,40 +405,110 @@ class _AlarmSettingsCard extends StatelessWidget {
   }
 
   void _showSoundPicker(BuildContext context, AlarmSoundService alarms) {
+    final sys = SystemRingtoneService();
     showDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Alarm sound'),
         contentPadding:
             const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-        content: ValueListenableBuilder<String>(
-          valueListenable: alarms.selectedSoundNotifier,
-          builder: (context, selectedId, _) => RadioGroup<String>(
-            groupValue: selectedId,
-            onChanged: (v) {
-              if (v == null) return;
-              alarms.preview(v);
-              alarms.setSound(v);
-            },
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  for (final sound in AlarmSoundService.sounds)
-                    RadioListTile<String>(
-                      value: sound.id,
-                      dense: true,
-                      title: Text(sound.name),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 520),
+          child: FutureBuilder<List<Map<String, String>>>(
+            future: sys.listTones(),
+            builder: (context, snap) {
+              final tones = snap.data ?? const <Map<String, String>>[];
+              String labelFor(String id) {
+                final sys = SystemRingtoneService();
+                if (!sys.isSystemId(id)) {
+                  for (final s in AlarmSoundService.sounds) {
+                    if (s.id == id) return s.name;
+                  }
+                  return 'Tone';
+                }
+                for (final tone in tones) {
+                  if (sys.idOfUri(tone['uri'] ?? '') == id) {
+                    return tone['name'] ?? 'Ringtone';
+                  }
+                }
+                return 'Ringtone';
+              }
+
+              return ValueListenableBuilder<String>(
+                valueListenable: alarms.selectedSoundNotifier,
+                builder: (context, selectedId, _) => RadioGroup<String>(
+                  groupValue: selectedId,
+                  onChanged: (v) {
+                    if (v == null) return;
+                    alarms.preview(v);
+                    alarms.setSound(v, name: labelFor(v));
+                  },
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        for (final sound in AlarmSoundService.sounds)
+                          RadioListTile<String>(
+                            value: sound.id,
+                            dense: true,
+                            title: Text(sound.name),
+                          ),
+                        const Divider(),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              'Phone ringtones',
+                              style: Theme.of(dialogContext)
+                                  .textTheme
+                                  .labelLarge
+                                  ?.copyWith(
+                                      color: Theme.of(dialogContext)
+                                          .colorScheme
+                                          .onSurfaceVariant),
+                            ),
+                          ),
+                        ),
+                        if (tones.isEmpty)
+                          const Padding(
+                            padding: EdgeInsets.all(16),
+                            child: Text(
+                                'No system ringtones available on this device.'),
+                          )
+                        else
+                          for (final tone in tones)
+                            RadioListTile<String>(
+                              value: sys.idOfUri(tone['uri'] ?? ''),
+                              dense: true,
+                              title: Text(
+                                tone['name'] ?? 'Ringtone',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              secondary: IconButton(
+                                icon: const Icon(Icons.play_circle_outline,
+                                    size: 20),
+                                onPressed: () =>
+                                    alarms.preview(sys.idOfUri(tone['uri'] ?? '')),
+                              ),
+                            ),
+                      ],
                     ),
-                ],
-              ),
-            ),
+                  ),
+                ),
+              );
+            },
           ),
         ),
         actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
+            onPressed: () async {
+              await sys.stopLoop();
+              await alarms.stopAlarm();
+              if (dialogContext.mounted) Navigator.pop(dialogContext);
+            },
             child: const Text('Done'),
           ),
         ],

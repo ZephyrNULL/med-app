@@ -24,11 +24,9 @@ class HomeScreen extends StatelessWidget {
     final today = DateFormat('EEEE, MMM d').format(now);
 
     final enabled = schedules.where((s) => s.enabled).toList();
-    final takenToday = _takenCount(events);
-    final takenSensors = events
-        .where((e) => e.type == 'taken')
-        .map((e) => e.sensorNumber)
-        .toSet();
+    final takenSensors = _takenSensorsToday(events, now);
+    final takenToday =
+        enabled.where((s) => takenSensors.contains(s.sensorNumber)).length;
 
     final scheme = Theme.of(context).colorScheme;
 
@@ -214,8 +212,16 @@ class HomeScreen extends StatelessWidget {
     return 'A little support goes a long way. Thank you for caring.';
   }
 
-  int _takenCount(List<DoseEvent> events) {
-    return events.where((e) => e.type == 'taken').length;
+  Set<int> _takenSensorsToday(List<DoseEvent> events, DateTime now) {
+    final sensors = <int>{};
+    for (final e in events) {
+      if (e.type != 'taken') continue;
+      final d = e.occurredAt.toLocal();
+      if (d.year == now.year && d.month == now.month && d.day == now.day) {
+        sensors.add(e.sensorNumber);
+      }
+    }
+    return sensors;
   }
 
   MedicineSchedule? _nextDose(List<MedicineSchedule> schedules) {

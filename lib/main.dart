@@ -7,6 +7,7 @@ import 'screens/setup_wizard_screen.dart';
 import 'screens/sign_in_screen.dart';
 import 'screens/sign_up_screen.dart';
 import 'screens/splash_screen.dart';
+import 'screens/verify_email_screen.dart';
 import 'services/alarm_sound_service.dart';
 import 'services/app_state.dart';
 import 'services/notification_service.dart';
@@ -42,6 +43,13 @@ class CareCubeApp extends StatelessWidget {
           '/home': (_) => const MainShell(),
         },
         onGenerateRoute: (settings) {
+          // '/verify' carries the signup email argument.
+          if (settings.name == '/verify') {
+            return MaterialPageRoute(
+              builder: (_) =>
+                  VerifyEmailScreen(email: settings.arguments as String?),
+            );
+          }
           // '/setup' carries a role argument.
           if (settings.name == '/setup') {
             final role = (settings.arguments as String?) ?? 'patient';
