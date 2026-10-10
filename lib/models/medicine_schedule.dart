@@ -3,6 +3,10 @@
 /// Mirrors the ESP32 firmware's slot model: 6 slots, each mapped to a
 /// physical sensor bay 1-6. Bay 7 is reserved for emergency and is NOT
 /// schedulable.
+///
+/// The box stores only TWO days, morning (M), afternoon (A) and night (N),
+/// so the six schedulable bays are Day 1M, Day 1A, Day 1N, Day 2M,
+/// Day 2A, Day 2N.
 class MedicineSchedule {
   final String? id;
   final int slot; // 0-5 on firmware, index into the 6-slot arrays
@@ -21,6 +25,27 @@ class MedicineSchedule {
     this.enabled = true,
     this.label = '',
   });
+
+  /// Human-readable name for a physical bay (1-based).
+  ///
+  /// Bays 1-6 are the two stored days split into morning (M), afternoon (A)
+  /// and night (N): 1 = Day 1M, 2 = Day 1A, 3 = Day 1N, 4 = Day 2M,
+  /// 5 = Day 2A, 6 = Day 2N. Bay 7 is the emergency bay. Anything else
+  /// falls back to "Bay N" so a stray value never renders as a bogus day.
+  static const _periods = ['M', 'A', 'N'];
+
+  static String labelForBay(int sensorNumber) {
+    if (sensorNumber >= 1 && sensorNumber <= 6) {
+      final day = ((sensorNumber - 1) ~/ 3) + 1;
+      final period = _periods[(sensorNumber - 1) % 3];
+      return 'Day $day$period';
+    }
+    if (sensorNumber == 7) return 'Day 7 (emergency)';
+    return 'Bay $sensorNumber';
+  }
+
+  /// Name of the compartment this schedule lives in, e.g. "Day 2M".
+  String get bayLabel => labelForBay(sensorNumber);
 
   factory MedicineSchedule.fromMap(Map<String, dynamic> map) {
     return MedicineSchedule(
