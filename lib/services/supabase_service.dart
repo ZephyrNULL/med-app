@@ -95,6 +95,22 @@ class SupabaseService {
     required String patientId,
     required String deviceId,
   }) async {
+    // Prefer the server-side pairing RPC. boxes.device_id is UNIQUE and
+    // a device left over under a DIFFERENT patient is not editable by the
+    // current user (RLS), so the plain INSERT below would fail with a
+    // duplicate-key error. The RPC (SECURITY DEFINER, see schema.sql) makes
+    // pairing idempotent: re-points the caller's own box, adopts a stale
+    // box row for the device, or creates a fresh one. Fall back to the
+    // legacy insert/update when the migration hasn't been applied yet.
+    try {
+      final res = await client
+          .rpc('pair_box', params: {'p_device_id': deviceId})
+          .single();
+      return Map<String, dynamic>.from(res as Map);
+    } catch (_) {
+      debugPrint('[supabase] pair_box rpc unavailable, using legacy path');
+    }
+
     // Reuse the patient's existing box if present (so "connect box" is
     // just a re-point, never a duplicate), otherwise create one.
     final existing = await client
@@ -117,6 +133,22 @@ class SupabaseService {
         .update({'device_id': deviceId})
         .eq('id', existing['id']);
     return existing;
+  }
+
+  /// Connects a caregiver to a patient's box by typing its device id.
+  ///
+  /// Boxes are patient-owned; a caregiver cannot pair one into their own
+  /// account. Instead the `link_caregiver_to_device` RPC (SECURITY DEFINER)
+  /// finds the patient who already paired the box and inserts an ACTIVE
+  /// patient-caretaker link, letting the caregiver's app load the same box
+  /// through `loadForCaregiver`. Returns the box row (which owns the id of
+  /// the patient it belongs to).
+  static Future<Map<String, dynamic>> linkCaregiverToDevice(
+      String deviceId) async {
+    final res = await client
+        .rpc('link_caregiver_to_device', params: {'p_device_id': deviceId})
+        .single();
+    return Map<String, dynamic>.from(res as Map);
   }
 
   // ---- Schedules ----
