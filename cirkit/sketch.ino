@@ -107,7 +107,28 @@ VL53L0X sensor7;
 // ======================================================
 // MEDICINE DISTANCE THRESHOLD
 // ======================================================
+// A dose counts as "taken" only when the bay reads FARTHER than this.
 #define MEDICINE_THRESHOLD 90
+
+// A reading outside this range is a glitch, NOT a real measurement.
+// Treating a glitch as a real one is what made the box report
+// "MEDICINE TAKEN" on its own and stop ringing.
+#define SENSOR_MIN_VALID_MM 10
+#define SENSOR_MAX_VALID_MM 2000
+
+// The buzzer must ring for this long before a pickup can be confirmed, and
+// the bay must have been seen holding a dose first.
+const unsigned long TAKEN_MIN_ELAPSED      = 5000UL;
+const unsigned long TAKEN_EMPTY_BAY_GRACE  = 90000UL;
+const int           REQUIRED_TAKEN_READINGS = 3;
+
+// How late a dose may still fire. Absorbs loop jitter.
+const unsigned long REMINDER_CATCHUP_MS = 10UL * 60UL * 1000UL;
+
+// Re-publish the reminder while it still rings so the phone rings again
+// even if it missed the first event.
+const unsigned long REMINDER_REPUBLISH_MS = 30000UL;
+const unsigned long REMINDER_REPUBLISH_UNTIL_MS = 15UL * 60UL * 1000UL;
 
 // ======================================================
 // DOSE SCHEDULE (6 slots)
@@ -127,6 +148,18 @@ const int EMERGENCY_SLOT = 6;
 // DAILY DOSE FLAGS
 // ======================================================
 int activeReminder = -1;
+
+// Monotonic day stamp (yyyy*10000 + mm*100 + dd) of the day the
+// doseTriggered[] flags belong to. Rolling over on a *change* of day
+// (rather than at exactly 00:00:00) means one slow loop iteration can no
+// longer disable every reminder for the rest of the day.
+int currentDayStamp = -1;
+
+// Tracking state for the running reminder.
+unsigned long reminderStartTime = 0;
+unsigned long lastReminderRepublish = 0;
+int takenReadingCount = 0;
+bool baySeenOccupied = false;
 
 // ======================================================
 // DISPLAY STATES
@@ -169,7 +202,9 @@ unsigned long lastDHTRead = 0;
 // MQTT PUBLISH TIMER
 // ======================================================
 unsigned long lastMQTTPublish = 0;
-const unsigned long MQTT_PUBLISH_INTERVAL = 30000UL;
+// Heartbeat only: the environment is published every time a fresh DHT sample
+// lands (every 2s), so the app and the LCD agree.
+const unsigned long MQTT_HEARTBEAT_INTERVAL = 30000UL;
 
 // ======================================================
 // PREVIOUS S7 DISTANCE
@@ -189,8 +224,44 @@ unsigned long lastLCDUpdate = 0;
 // ======================================================
 // MEDICINE TAKEN CONFIRMATION
 // ======================================================
-int medicineTakenCount = 0;
-const int REQUIRED_TAKEN_READINGS = 3;
+// ======================================================
+// READING VALIDITY + DOSE DUE HELPERS
+// ======================================================
+bool isValidDistance(int mm) {
+  return mm >= SENSOR_MIN_VALID_MM && mm <= SENSOR_MAX_VALID_MM;
+}
+
+int dayStampOf(const DateTime& dt) {
+  return dt.year() * 10000 + dt.month() * 100 + dt.day();
+}
+
+// Compares "has the dose time passed" instead of "is the clock exactly on
+// the dose time". One loop iteration can take several seconds, so the exact
+// hour/minute test silently skipped the dose whenever a sweep straddled the
+// minute boundary - the buzzer then never rang at all.
+bool isDoseDue(int i, const DateTime& now, unsigned long* lateByMs) {
+  if (!doseEnabled[i]) return false;
+  if (doseTriggered[i]) return false;
+
+  long dueMinutes = (long)doseHour[i] * 60L + doseMinute[i];
+  long nowMinutes = (long)now.hour() * 60L + now.minute();
+
+  long delta = nowMinutes - dueMinutes;
+  if (delta < 0) return false;
+  if (delta > (long)(REMINDER_CATCHUP_MS / 60000UL)) return false;
+
+  if (lateByMs != NULL) *lateByMs = (unsigned long)(delta * 60000UL);
+  return true;
+}
+
+void rollOverDoseFlags(const DateTime& now) {
+  int stamp = dayStampOf(now);
+  if (stamp == currentDayStamp) return;
+  if (stamp < currentDayStamp) return; // clock stepped backwards
+
+  for (int i = 0; i < 6; i++) doseTriggered[i] = false;
+  currentDayStamp = stamp;
+}
 
 // ======================================================
 // TURN OFF ALL LEDs
@@ -283,16 +354,22 @@ void readAllSensors() {
 // ======================================================
 // READ DHT22
 // ======================================================
-void readDHT22() {
-  if (millis() - lastDHTRead >= 2000) {
-    lastDHTRead = millis();
-    float newHumidity = dht.readHumidity();
-    float newTemperature = dht.readTemperature();
-    if (!isnan(newHumidity) && !isnan(newTemperature)) {
-      humidity = newHumidity;
-      temperature = newTemperature;
-    }
-  }
+// The DHT22 refuses to be read faster than every 2s. Returning true only
+// when a fresh sample landed lets the loop publish the exact value the LCD
+// is showing, instead of republishing a stale one.
+const unsigned long DHT_READ_INTERVAL = 2000UL;
+
+bool readDHT22() {
+  if (millis() - lastDHTRead < DHT_READ_INTERVAL) return false;
+  lastDHTRead = millis();
+
+  float newHumidity = dht.readHumidity();
+  float newTemperature = dht.readTemperature();
+  if (isnan(newHumidity) || isnan(newTemperature)) return false;
+
+  humidity = newHumidity;
+  temperature = newTemperature;
+  return true;
 }
 
 // ======================================================
@@ -438,7 +515,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       displayState = MAIN_SCREEN;
       activeReminder = -1;
       emergencyTriggered = false;
-      medicineTakenCount = 0;
+      takenReadingCount = 0;
+      baySeenOccupied = false;
       lcd.clear();
     }
   }
@@ -829,21 +907,24 @@ void loop() {
   // ====================================================
   // READ DHT22
   // ====================================================
-  readDHT22();
+  bool freshEnvironment = readDHT22();
 
   // ====================================================
-  // RESET DAILY DOSE FLAGS AT MIDNIGHT
+  // RESET DAILY DOSE FLAGS WHEN THE DAY CHANGES
   // ====================================================
-  if (now.hour() == 0 && now.minute() == 0 && now.second() == 0) {
-    for (int i = 0; i < 6; i++) {
-      doseTriggered[i] = false;
-    }
-  }
+  // Keyed off a day stamp instead of second==0: a missed midnight second
+  // used to mean no dose fired for the rest of the day.
+  rollOverDoseFlags(now);
 
   // ====================================================
   // PUBLISH STATUS EVERY 30 SECONDS
   // ====================================================
-  if (millis() - lastMQTTPublish >= MQTT_PUBLISH_INTERVAL) {
+  // Publish the moment a new sample arrives, in the same loop iteration that
+  // redraws the LCD, so both always show the same numbers. Publishing on a
+  // fixed 30s timer is what made the app look frozen and drift a few tenths
+  // behind the LCD.
+  if (freshEnvironment ||
+      millis() - lastMQTTPublish >= MQTT_HEARTBEAT_INTERVAL) {
     lastMQTTPublish = millis();
     publishStatus();
   }
@@ -855,7 +936,9 @@ void loop() {
       displayState == MAIN_SCREEN &&
       !emergencyTriggered)
   {
-    if (previousDistance7 <= MEDICINE_THRESHOLD &&
+    if (isValidDistance(previousDistance7) &&
+        isValidDistance(distance7) &&
+        previousDistance7 <= MEDICINE_THRESHOLD &&
         distance7 > MEDICINE_THRESHOLD)
     {
       emergencyTriggered = true;
@@ -873,7 +956,7 @@ void loop() {
     }
   }
 
-  previousDistance7 = distance7;
+  if (isValidDistance(distance7)) previousDistance7 = distance7;
 
   // ====================================================
   // EMERGENCY STATE
@@ -901,28 +984,26 @@ void loop() {
   // ====================================================
   if (activeReminder == -1 && displayState == MAIN_SCREEN) {
     for (int i = 0; i < 6; i++) {
-      if (!doseEnabled[i]) continue;
+      if (!isDoseDue(i, now, NULL)) continue;
 
-      if (now.hour() == doseHour[i] &&
-          now.minute() == doseMinute[i] &&
-          !doseTriggered[i])
-      {
-        activeReminder = i;
-        doseTriggered[i] = true;
-        displayState = MEDICINE_REMINDER;
-        medicineTakenCount = 0;
+      activeReminder = i;
+      doseTriggered[i] = true;
+      displayState = MEDICINE_REMINDER;
+      takenReadingCount = 0;
+      baySeenOccupied = false;
+      reminderStartTime = millis();
+      lastReminderRepublish = millis();
 
-        turnOnLED(doseSensor[i]);
-        digitalWrite(BUZZER, HIGH);
+      turnOnLED(doseSensor[i]);
+      digitalWrite(BUZZER, HIGH);
 
-        publishEvent("reminder_started", doseSensor[i] + 1);
+      publishEvent("reminder_started", doseSensor[i] + 1);
 
-        lcd.clear();
-        Serial.print("REMINDER -> SENSOR ");
-        Serial.print(doseSensor[i] + 1);
-        Serial.println(" TAKE MEDICINE");
-        break;
-      }
+      lcd.clear();
+      Serial.print("REMINDER -> SENSOR ");
+      Serial.print(doseSensor[i] + 1);
+      Serial.println(" TAKE MEDICINE");
+      break;
     }
   }
 
@@ -933,20 +1014,36 @@ void loop() {
     int sensorNumber = doseSensor[activeReminder];
     int activeDistance = getSensorDistance(sensorNumber);
 
-    if (activeDistance > MEDICINE_THRESHOLD) {
-      medicineTakenCount++;
+    unsigned long elapsed = millis() - reminderStartTime;
 
-      Serial.print("Taken confirmation: ");
-      Serial.print(medicineTakenCount);
-      Serial.print("/");
-      Serial.println(REQUIRED_TAKEN_READINGS);
+    // Re-publish so a phone that missed the first event rings again.
+    if (millis() - lastReminderRepublish >= REMINDER_REPUBLISH_MS &&
+        elapsed < REMINDER_REPUBLISH_UNTIL_MS) {
+      lastReminderRepublish = millis();
+      publishEvent("reminder_started", sensorNumber + 1);
+    }
 
-      if (medicineTakenCount >= REQUIRED_TAKEN_READINGS) {
+    // A pickup must be a real, consecutive, plausible pickup. Counting raw
+    // samples is what let the box declare "MEDICINE TAKEN" on its own and
+    // switch the buzzer off while the dose was still in the bay.
+    bool readingOk = isValidDistance(activeDistance);
+    bool doseRemoved = readingOk && activeDistance > MEDICINE_THRESHOLD;
+
+    if (readingOk && !doseRemoved) baySeenOccupied = true;
+
+    if (doseRemoved) takenReadingCount++;
+    else takenReadingCount = 0; // must be consecutive
+
+    bool timeElapsed = elapsed >= TAKEN_MIN_ELAPSED;
+    bool sawPickup = baySeenOccupied || elapsed >= TAKEN_EMPTY_BAY_GRACE;
+
+    if (readingOk && timeElapsed && sawPickup &&
+        takenReadingCount >= REQUIRED_TAKEN_READINGS) {
         digitalWrite(BUZZER, LOW);
         turnOnLED(sensorNumber);
         displayState = MEDICINE_TAKEN;
         messageStartTime = millis();
-        medicineTakenCount = 0;
+        takenReadingCount = 0;
 
         publishEvent("taken", sensorNumber + 1);
 
@@ -954,9 +1051,8 @@ void loop() {
         Serial.print("SENSOR ");
         Serial.print(sensorNumber + 1);
         Serial.println(" -> MEDICINE TAKEN");
-      }
     } else {
-      medicineTakenCount = 0;
+      // Everything that is not a confirmed pickup keeps ringing.
       digitalWrite(BUZZER, HIGH);
       turnOnLED(sensorNumber);
 
