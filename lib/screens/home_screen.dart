@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../models/dose_event.dart';
 import '../models/medicine_schedule.dart';
 import '../services/app_state.dart';
+import '../services/care_cube_repository.dart';
 import '../widgets/common.dart';
 
 class HomeScreen extends StatelessWidget {
@@ -24,9 +25,22 @@ class HomeScreen extends StatelessWidget {
     final today = DateFormat('EEEE, MMM d').format(now);
 
     final enabled = schedules.where((s) => s.enabled).toList();
-    final takenSensors = _takenSensorsToday(events, now);
-    final takenToday =
-        enabled.where((s) => takenSensors.contains(s.sensorNumber)).length;
+
+    // Homed doses are auto-removed, so a handled dose drops out of the
+    // schedule list. To keep today's plan visible (and the taken count
+    // rising instead of resetting to 0/N), totals include any bay that rang
+    // AND got resolved today but no longer has a schedule - i.e. was handled
+    // and auto-removed. Both directions stay time-correlated, so a stray
+    // `taken` from an earlier dose in the same bay cannot count a brand-new
+    // schedule as handled.
+    final removedSensors = _handledRemovedSensors(schedules, events, now);
+    final totalDoses = enabled.length + removedSensors.length;
+    final handledSensors = <int>{
+      for (final s in enabled)
+        if (_isResolvedSchedule(s, events, now)) s.sensorNumber,
+    }..addAll(removedSensors);
+    final handledToday = handledSensors.length;
+    final remainingToday = totalDoses - handledToday;
 
     final scheme = Theme.of(context).colorScheme;
 
@@ -108,10 +122,11 @@ class HomeScreen extends StatelessWidget {
             ),
             const SizedBox(height: 16),
 
-            // Dose progress today
+            // Dose progress today (remaining; drains as doses are handled)
             _DoseProgressCard(
-              takenToday: takenToday,
-              totalDoses: enabled.length,
+              remainingToday: remainingToday,
+              handledToday: handledToday,
+              totalDoses: totalDoses,
             ),
             const SizedBox(height: 16),
 
@@ -125,7 +140,17 @@ class HomeScreen extends StatelessWidget {
 
             // Environment + device info
             const SectionHeader(title: 'Box environment'),
-            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.only(top: 4, bottom: 8),
+              child: Text(
+                _freshnessLabel(repo),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: repo.isReadingStale
+                          ? Theme.of(context).colorScheme.error
+                          : Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+            ),
             LayoutBuilder(
               builder: (context, constraints) {
                 final twoCols = (constraints.maxWidth - 12) / 2;
@@ -169,9 +194,9 @@ class HomeScreen extends StatelessWidget {
                       child: InfoCard(
                         icon: Icons.check_circle_outline,
                         label: 'Doses taken',
-                        value: enabled.isEmpty
+                        value: totalDoses == 0
                             ? '0/0'
-                            : '$takenToday/${enabled.length}',
+                            : '$handledToday/$totalDoses',
                         accent: Colors.green,
                       ),
                     ),
@@ -185,13 +210,18 @@ class HomeScreen extends StatelessWidget {
             SectionHeader(
               title: 'Today\'s doses',
               trailing: Text(
-                '$takenToday of ${enabled.length} taken',
+                '$handledToday of $totalDoses taken',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: scheme.onSurfaceVariant),
               ),
             ),
             const SizedBox(height: 8),
-            _TodayStatus(schedules: enabled, takenSensors: takenSensors),
+            _TodayStatus(
+              schedules: enabled,
+              handledSensors: handledSensors,
+              totalToday: totalDoses,
+              handledToday: handledToday,
+            ),
           ],
         ),
       ),
@@ -212,17 +242,95 @@ class HomeScreen extends StatelessWidget {
     return 'A little support goes a long way. Thank you for caring.';
   }
 
-  Set<int> _takenSensorsToday(List<DoseEvent> events, DateTime now) {
-    final sensors = <int>{};
+  static bool _sameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  /// Window around a schedule's time within which the box's reminder is
+  /// considered to belong to that occurrence.
+  static final _ringWindow = const Duration(minutes: 10);
+
+  /// The reminder the box fired for this schedule's occurrence today, if
+  /// any. A `taken` only counts against a schedule when it follows (near)
+  /// this ring — otherwise a `taken` from an earlier dose in the same bay
+  /// (e.g. a schedule that was auto-removed after being handled) would
+  /// wrongly mark a brand-new schedule as already taken.
+  DoseEvent? _ringFor(
+      MedicineSchedule s, List<DoseEvent> events, DateTime now) {
+    final target = DateTime(now.year, now.month, now.day, s.hour, s.minute);
+    DoseEvent? best;
+    Duration? bestDiff;
     for (final e in events) {
-      if (e.type != 'taken') continue;
+      if (!e.isActiveAlarm || e.sensorNumber != s.sensorNumber) continue;
       final d = e.occurredAt.toLocal();
-      if (d.year == now.year && d.month == now.month && d.day == now.day) {
-        sensors.add(e.sensorNumber);
+      if (!_sameDay(d, now)) continue;
+      final diff = d.difference(target).abs();
+      if (diff <= _ringWindow && (bestDiff == null || diff < bestDiff)) {
+        best = e;
+        bestDiff = diff;
       }
     }
-    return sensors;
+    return best;
   }
+
+  bool _isResolvedSchedule(
+      MedicineSchedule s, List<DoseEvent> events, DateTime now) {
+    final ring = _ringFor(s, events, now);
+    for (final e in events) {
+      if (e.sensorNumber != s.sensorNumber) continue;
+      final d = e.occurredAt.toLocal();
+      if (!_sameDay(d, now)) continue;
+      if (e.type == 'missed') return true;
+      if (e.type == 'taken' || e.type == 'caregiver_stopped') {
+        if (ring != null) {
+          // The box rang for this occurrence; the resolution must follow it.
+          if (!d.isBefore(ring.occurredAt.subtract(_ringGrace))) return true;
+        } else {
+          // No ring recorded (box offline / local scanner). Attribute the
+          // resolution only if it is close to the scheduled time, so a stray
+          // `taken` left over from an earlier dose in the same bay (whose
+          // schedule was auto-removed) cannot mark a fresh schedule as taken.
+          final late = d.difference(_targetFor(s, now));
+          if (late >= -_ringGrace && late <= _noRingLate) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  DateTime _targetFor(MedicineSchedule s, DateTime now) =>
+      DateTime(now.year, now.month, now.day, s.hour, s.minute);
+
+  /// Bays that still ring (or rang) today, got resolved (taken / stopped /
+  /// missed), and no longer have an enabled schedule — these are doses that
+  /// were handled and auto-removed. Counting them keeps today's plan totals
+  /// stable instead of collapsing to 0/0 the moment the first dose is taken.
+  Set<int> _handledRemovedSensors(List<MedicineSchedule> schedules,
+      List<DoseEvent> events, DateTime now) {
+    final enabledBays = {
+      for (final s in schedules)
+        if (s.enabled) s.sensorNumber,
+    };
+    final removed = <int>{};
+    for (final e in events) {
+      if (!e.isActiveAlarm) continue;
+      if (enabledBays.contains(e.sensorNumber)) continue;
+      final d = e.occurredAt.toLocal();
+      if (!_sameDay(d, now)) continue;
+      final resolved = events.any((r) =>
+          r.sensorNumber == e.sensorNumber &&
+          (r.type == 'taken' ||
+              r.type == 'caregiver_stopped' ||
+              r.type == 'missed') &&
+          _sameDay(r.occurredAt.toLocal(), now) &&
+          !r.occurredAt.toLocal().isBefore(d.subtract(_ringGrace)) &&
+          r.occurredAt.toLocal().difference(d) <= _noRingLate);
+      if (resolved) removed.add(e.sensorNumber);
+    }
+    return removed;
+  }
+
+  static final _ringGrace = const Duration(minutes: 5);
+  static final _noRingLate = const Duration(minutes: 90);
 
   MedicineSchedule? _nextDose(List<MedicineSchedule> schedules) {
     final now = DateTime.now();
@@ -247,21 +355,42 @@ class HomeScreen extends StatelessWidget {
     }
     return best;
   }
+
+  /// Explains where the numbers above came from, so a stalled feed reads as
+  /// stalled instead of looking like a stable room.
+  static String _freshnessLabel(CareCubeRepository repo) {
+    final age = repo.readingAge;
+    if (age == null) return 'Waiting for the box to report its environment...';
+    final seconds = age.inSeconds;
+    final string = seconds < 5
+        ? 'just now'
+        : seconds < 60
+            ? '${seconds}s ago'
+            : seconds < 3600
+                ? '${(seconds / 60).floor()}m ago'
+                : '${(seconds / 3600).floor()}h ago';
+    return repo.isReadingStale
+        ? 'Last reading $string - the box has stopped reporting'
+        : 'Updated $string';
+  }
 }
 
 class _DoseProgressCard extends StatelessWidget {
-  final int takenToday;
+  final int remainingToday;
+  final int handledToday;
   final int totalDoses;
   const _DoseProgressCard({
-    required this.takenToday,
+    required this.remainingToday,
+    required this.handledToday,
     required this.totalDoses,
   });
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final fraction = totalDoses == 0 ? 0.0 : takenToday / totalDoses;
-    final done = takenToday >= totalDoses && totalDoses > 0;
+    final fraction =
+        totalDoses == 0 ? 0.0 : remainingToday / totalDoses;
+    final done = handledToday >= totalDoses && totalDoses > 0;
 
     return Container(
       decoration: BoxDecoration(
@@ -292,7 +421,9 @@ class _DoseProgressCard extends StatelessWidget {
           const SizedBox(height: 12),
           ProgressBarLabeled(
             fraction: fraction,
-            label: '$takenToday of $totalDoses doses taken today',
+            label: remainingToday == 0 && totalDoses == 0
+                ? 'No doses scheduled today'
+                : '$remainingToday of $totalDoses doses remaining today',
             color: done ? Colors.green : scheme.secondary,
           ),
         ],
@@ -358,8 +489,8 @@ class _NextDoseCard extends StatelessWidget {
                             Flexible(
                               child: Text(
                                 schedule!.label.isNotEmpty
-                                    ? '${schedule!.label} • Day ${schedule!.sensorNumber}'
-                                    : 'Day ${schedule!.sensorNumber}',
+                                    ? '${schedule!.label} • ${schedule!.bayLabel}'
+                                    : schedule!.bayLabel,
                                 style: theme.textTheme.bodyMedium,
                               ),
                             ),
@@ -405,16 +536,44 @@ class _QuickActions extends StatelessWidget {
 
 class _TodayStatus extends StatelessWidget {
   final List<MedicineSchedule> schedules;
-  final Set<int> takenSensors;
+  final Set<int> handledSensors;
+  final int totalToday;
+  final int handledToday;
   const _TodayStatus({
     required this.schedules,
-    required this.takenSensors,
+    required this.handledSensors,
+    required this.totalToday,
+    required this.handledToday,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     if (schedules.isEmpty) {
+      if (totalToday > 0) {
+        return Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                Icon(Icons.check_circle_outline,
+                    color: theme.colorScheme.primary),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    handledToday == totalToday
+                        ? 'All of today\'s doses are handled. '
+                            'Add another from the Medicine tab.'
+                        : 'Today\'s dose is already handled. '
+                            'Add another from the Medicine tab.',
+                    style: theme.textTheme.bodyMedium,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      }
       return Card(
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -437,13 +596,13 @@ class _TodayStatus extends StatelessWidget {
           for (final s in sorted)
             ListTile(
               leading: _timeBadge(context, s.hour, s.minute),
-              title: Text(s.label.isNotEmpty ? s.label : 'Day ${s.sensorNumber}',
+              title: Text(s.label.isNotEmpty ? s.label : s.bayLabel,
                   style: theme.textTheme.titleMedium
                       ?.copyWith(fontWeight: FontWeight.w600)),
-              subtitle: Text('Day ${s.sensorNumber}',
+              subtitle: Text(s.bayLabel,
                   style: theme.textTheme.bodySmall
                       ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-              trailing: takenSensors.contains(s.sensorNumber)
+              trailing: handledSensors.contains(s.sensorNumber)
                   ? _statusPill(context, 'Taken', Colors.green)
                   : _pendingPill(context, s),
             ),
