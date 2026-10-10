@@ -1,5 +1,6 @@
 import datetime
 import json
+import math
 import os
 import sys
 import threading
@@ -27,7 +28,7 @@ TOPIC_STATUS = f"carecube/{DEVICE_ID}/status"
 TOPIC_EVENT = f"carecube/{DEVICE_ID}/event"
 TOPIC_ALARM_STOP = f"carecube/{DEVICE_ID}/alarm/stop"
 
-STATUS_INTERVAL_S = 30
+STATUS_INTERVAL_S = 2
 
 # ======================================================
 # DOSE SCHEDULE (6 slots, mirrors firmware defaults)
@@ -46,7 +47,21 @@ humidity = 55.0
 connected = threading.Event()
 
 active_alarm = None  # {"sensor_number": int} while buzzer is ringing
-fired_keys = set()  # (slot_index, "HH:MM") already fired today
+fired_keys = set()  # (day, slot_index, "HH:MM") already fired - day-scoped
+last_alarm_day = None  # ISO date the fired_keys belong to
+CATCH_UP_MINUTES = 10  # mirrors firmware REMINDER_CATCHUP_MS (10 min)
+
+# ======================================================
+# ToF SENSOR SIMULATION (mirrors the firmware's bay rule)
+#   distance > 90mm  -> bay empty (medicine removed)
+#   3 consecutive >90mm readings -> dose taken (debounce)
+# ======================================================
+EMPTY_MM = 150  # bay empty
+PRESENT_MM = 40  # medicine sitting in the bay
+TAKEN_DEBOUNCE = 3
+
+sensor_distance = {n: EMPTY_MM for n in range(1, 8)}
+taken_readings = 0
 
 
 def log(msg):
@@ -84,11 +99,12 @@ def stop_alarm_if_any(reason):
 
 
 def publish_status(client):
+    t = time.time()
     payload = {
         "device_id": DEVICE_ID,
-        "temperature": round(temperature + (time.time() % 3) / 10, 1),
-        "humidity": round(humidity + (time.time() % 5) / 10, 1),
-        "timestamp": int(time.time()),
+        "temperature": round(temperature + math.sin(t / 12.0) * 0.6, 1),
+        "humidity": round(humidity + math.sin(t / 18.0) * 2.0, 1),
+        "timestamp": int(t),
     }
     try:
         client.publish(TOPIC_STATUS, json.dumps(payload), qos=0, retain=False)
@@ -109,6 +125,9 @@ def publish_event(client, event_type, sensor_number, ring=False):
         log(f"MQTT -> [{TOPIC_EVENT}] {json.dumps(payload)}")
     except Exception as e:
         log(f"publish event failed: {e}")
+    # A reminder means the medicine is (still) in that bay.
+    if event_type in ("reminder_started", "emergency_taken"):
+        sensor_distance[sensor_number] = PRESENT_MM
     if ring:
         ring_alarm()
         log(f"[BUZZER] ALARM ringing for sensor {sensor_number}")
@@ -162,7 +181,11 @@ def on_message(client, userdata, message):
         except Exception as e:
             log(f"JSON parse error: {e}")
     elif topic == TOPIC_ALARM_STOP:
+        # Firmware echoes caregiver_stopped so the app's own alarm resolves.
+        sensor = active_alarm["sensor_number"] if active_alarm else None
         stop_alarm_if_any("alarm/stop received")
+        if sensor is not None:
+            publish_event(client, "caregiver_stopped", sensor)
 
 
 def status_loop(client):
@@ -173,23 +196,44 @@ def status_loop(client):
 
 
 def alarm_loop(client):
-    """Firmware behavior: when local time matches an enabled slot,
-    sound the buzzer and publish reminder_started until 'taken' or alarm/stop."""
-    global active_alarm
+    """Firmware behavior: when local time reaches (or is within the 10-minute
+    catch-up window after) an enabled slot's time AND no other alarm is
+    currently ringing, sound the buzzer and publish reminder_started. Fires
+    only the first due slot (one alarm at a time, like the firmware's loop),
+    and each slot rings at most once per calendar day regardless of how late
+    it is caught up."""
+    global active_alarm, last_alarm_day
     while True:
         connected.wait()
         now = datetime.datetime.now()
+        day = now.date().isoformat()
 
-        for i, s in enumerate(dose):
-            if not s["enabled"]:
-                continue
-            key = (i, f"{s['hour']:02d}:{s['minute']:02d}")
-            if (now.hour, now.minute) == (s["hour"], s["minute"]) and key not in fired_keys:
+        # Day rollover: mirrors firmware rollOverDoseFlags(). A fresh day must
+        # never be blocked by a key left over from the previous day - even when
+        # the previous day's dose fired a minute apart from today's.
+        if day != last_alarm_day:
+            fired_keys.clear()
+            last_alarm_day = day
+            log(f"[ALARM] new day {day} - daily fired keys reset")
+
+        if active_alarm is None:
+            now_minutes = now.hour * 60 + now.minute
+            for i, s in enumerate(dose):
+                if not s["enabled"]:
+                    continue
+                due_minutes = s["hour"] * 60 + s["minute"]
+                delta = now_minutes - due_minutes
+                if delta < 0 or delta > CATCH_UP_MINUTES:
+                    continue
+                key = (day, i, f"{s['hour']:02d}:{s['minute']:02d}")
+                if key in fired_keys:
+                    continue
                 fired_keys.add(key)
                 sensor = s["sensor_number"]
                 active_alarm = {"sensor_number": sensor}
                 log(f"[ALARM] {now:%H:%M:%S} matches schedule: S{sensor} fired")
                 publish_event(client, "reminder_started", sensor, ring=True)
+                break  # firmware rings just one alarm at a time
 
         if active_alarm is not None:
             beep_tick()
@@ -197,10 +241,39 @@ def alarm_loop(client):
         time.sleep(5)
 
 
+def tof_loop(client):
+    """Firmware behaviour: while a dose alarm is ringing, read the active
+    bay's ToF distance every 500ms. Three consecutive readings > 90mm
+    (bay empty) confirm the patient took the medicine -> publish `taken`
+    and silence the buzzer."""
+    global active_alarm, taken_readings
+    while True:
+        connected.wait()
+        if active_alarm is not None:
+            sensor = active_alarm["sensor_number"]
+            dist = sensor_distance.get(sensor, EMPTY_MM)
+            if dist > 90:
+                taken_readings += 1
+                log(f"[TOF] S{sensor} {dist}mm > 90mm "
+                    f"({taken_readings}/{TAKEN_DEBOUNCE})")
+                if taken_readings >= TAKEN_DEBOUNCE:
+                    taken_readings = 0
+                    stop_alarm_if_any(f"ToF detected S{sensor} empty")
+                    publish_event(client, "taken", sensor)
+            else:
+                if taken_readings:
+                    log(f"[TOF] S{sensor} {dist}mm <= 90mm - reset count")
+                taken_readings = 0
+        else:
+            taken_readings = 0
+        time.sleep(0.5)
+
+
 CMDFILE = "virtual_device_cmd.txt"
 
 
 def handle_command(client, line):
+    global active_alarm, taken_readings
     parts = line.split()
     if not parts:
         return True
@@ -208,8 +281,11 @@ def handle_command(client, line):
     if cmd == "reminder" and len(parts) > 1:
         slot = int(parts[1])
         if 1 <= slot <= 6:
-            active_alarm = {"sensor_number": dose[slot - 1]["sensor_number"]}
-            publish_event(client, "reminder_started", active_alarm["sensor_number"], ring=True)
+            sensor = dose[slot - 1]["sensor_number"]
+            active_alarm = {"sensor_number": sensor}
+            sensor_distance[sensor] = PRESENT_MM
+            taken_readings = 0
+            publish_event(client, "reminder_started", sensor, ring=True)
         else:
             log("slot must be 1..6")
         return True
@@ -218,6 +294,16 @@ def handle_command(client, line):
         if 1 <= slot <= 6:
             stop_alarm_if_any(f"taken {slot}")
             publish_event(client, "taken", dose[slot - 1]["sensor_number"])
+        else:
+            log("slot must be 1..6")
+        return True
+    if cmd == "take" and len(parts) > 1:
+        slot = int(parts[1])
+        if 1 <= slot <= 6:
+            sensor = dose[slot - 1]["sensor_number"]
+            log(f"[TOF] Medicine removed from bay S{sensor} - "
+                f"waiting for {TAKEN_DEBOUNCE} readings > 90mm")
+            sensor_distance[sensor] = EMPTY_MM
         else:
             log("slot must be 1..6")
         return True
@@ -230,12 +316,13 @@ def handle_command(client, line):
         return True
     if cmd in ("quit", "exit"):
         return False
-    log("Unknown command. Use: reminder <1-6> | taken <1-6> | emergency | status | quit")
+    log("Unknown command. Use: reminder <1-6> | take <1-6> | taken <1-6> | "
+        "emergency | status | quit")
     return True
 
 
 def interactive_loop(client):
-    log("Commands: reminder <1-6> | taken <1-6> | emergency | status | quit")
+    log("Commands: reminder <1-6> | take <1-6> | taken <1-6> | emergency | status | quit")
     log(f"Tip: you can also put commands in {CMDFILE} (one per line) - auto-read.")
     while True:
         try:
@@ -290,6 +377,8 @@ def main():
     t.start()
     at = threading.Thread(target=alarm_loop, args=(client,), daemon=True)
     at.start()
+    tt = threading.Thread(target=tof_loop, args=(client,), daemon=True)
+    tt.start()
     ft = threading.Thread(target=file_command_loop, args=(client,), daemon=True)
     ft.start()
 
