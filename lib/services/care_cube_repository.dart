@@ -36,9 +36,32 @@ class CareCubeRepository extends ChangeNotifier {
   /// (or the Wokwi sim) is offline. Scans enabled schedules every tick.
   Timer? _scheduleTimer;
 
-  /// Daily keys ("yyyy-M-d|sensor") for which the phone already fired a
-  /// local reminder, so the scan is idempotent per dose per day.
+  /// How late a dose may still ring on the phone. The previous design only
+  /// matched an exact hour/minute on a 20s timer, so any drift, a timer
+  /// delayed by Android doze, or the app being resumed late meant the dose
+  /// was silently skipped for the whole day.
+  static const _doseCatchUp = Duration(minutes: 30);
+
+  /// How often a live reading is written to the cloud. The box now publishes
+  /// the environment every couple of seconds, so persisting on every message
+  /// would add tens of thousands of rows a day; the UI still updates live.
+  static const _readingPersistInterval = Duration(minutes: 1);
+
+  DateTime? _lastReadingPersistAt;
+
+  /// Drives the "updated Ns ago" freshness label. Publishing does not
+  /// generate its own rebuild once the box goes quiet, so a slow tick keeps
+  /// a stale reading from looking current.
+  Timer? _freshnessTimer;
+
+  /// Per-schedule "already rang today" keys ("yyyy-M-d|slot") so the scan
+  /// stays idempotent per dose per day.
   final Set<String> _localAlarmKeys = {};
+
+  /// Bay number of the alarm the phone is currently ringing for. A
+  /// resolution event only stops the alarm when it refers to this bay,
+  /// instead of any event silencing any alarm.
+  int? _activeAlarmBay;
 
   String? get boxId => _boxId;
   String? get deviceId => _deviceId;
@@ -47,6 +70,26 @@ class CareCubeRepository extends ChangeNotifier {
   List<DoseEvent> get events => List.unmodifiable(_events);
   List<MedicineSchedule> get schedules => List.unmodifiable(_schedules);
   bool get mqttConnected => _mqttConnected;
+
+  /// When the box last pushed an environment reading. Deliberately separate
+  /// from [lastSynced]: a dose event or a server refresh bumps that one, and
+  /// reusing it would relabel a stale temperature as "just now".
+  DateTime? _lastReadingAt;
+
+  /// How long ago the box last reported its environment, or null if it never
+  /// has. A reading older than [_staleAfter] is shown as stale rather than
+  /// presented as if it were live.
+  Duration? get readingAge {
+    if (_latestReading == null) return null;
+    return DateTime.now().difference(_lastReadingAt ?? DateTime.now());
+  }
+
+  static const _staleAfter = Duration(seconds: 20);
+
+  bool get isReadingStale {
+    final age = readingAge;
+    return age == null || age > _staleAfter;
+  }
 
   /// True if the most recent event is an unacknowledged reminder or
   /// emergency — mirrors the ESP32's MEDICINE_REMINDER / EMERGENCY_TAKEN
@@ -89,6 +132,7 @@ class CareCubeRepository extends ChangeNotifier {
     _events
       ..clear()
       ..addAll(events.map(DoseEvent.fromMap));
+    _syncActiveAlarmBay();
 
     final reading = await SupabaseService.fetchLatestReading(boxId);
     _latestReading = reading == null ? null : BoxReading.fromMap(reading);
@@ -121,35 +165,73 @@ class CareCubeRepository extends ChangeNotifier {
     _startScheduleScanner();
   }
 
-  /// Polls enabled schedules; fires a local reminder when a dose time is
-  /// reached that hasn't already been triggered today.
+  /// Polls enabled schedules and rings for any dose that has come due and
+  /// has not already rung today. Runs on a short interval and on resume.
   void _startScheduleScanner() {
     _scheduleTimer?.cancel();
-    _scheduleTimer = Timer.periodic(const Duration(seconds: 20), (_) {
+    _scanSchedules();
+    _scheduleTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       _scanSchedules();
     });
+
+    _freshnessTimer?.cancel();
+    _freshnessTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (_latestReading != null) notifyListeners();
+    });
+  }
+
+  /// Re-check after the app comes back to the foreground. Timers are
+  /// throttled or paused while backgrounded, so a dose reached in the
+  /// background has to be picked up here - but only after the feed is
+  /// re-read, otherwise a dose taken while away would still be ringing.
+  Future<void> onAppResumed() async {
+    try {
+      await refreshFromServer();
+    } catch (e) {
+      debugPrint('Resume refresh failed: $e');
+    }
+    _scanSchedules();
+    if (hasActiveAlarm && !AlarmSoundService().isRinging) {
+      AlarmSoundService().startAlarm();
+    }
   }
 
   void _scanSchedules() {
     if (_deviceId == null || _schedules.isEmpty) return;
-    if (AlarmSoundService().isRinging) return;
 
     final now = DateTime.now();
+
     for (final s in _schedules) {
       if (!s.enabled) continue;
-      if (s.hour != now.hour || s.minute != now.minute) continue;
 
-      final key = '${now.year}-${now.month}-${now.day}|${s.sensorNumber}';
-      if (!_localAlarmKeys.add(key)) continue; // already triggered today
+      final due = DateTime(now.year, now.month, now.day, s.hour, s.minute);
+      if (now.isBefore(due)) continue;
+      if (now.difference(due) > _doseCatchUp) continue;
 
-      final alreadyTaken = _events.any((e) =>
-          e.type == 'taken' &&
+      final key = '${now.year}-${now.month}-${now.day}|${s.slot}';
+      if (!_localAlarmKeys.add(key)) continue; // already rang today
+
+      // Already handled today: taking the dose, a caregiver stopping the
+      // alarm, or the box missing the dose all end today's obligation. A
+      // late re-fire after that would be a phantom alarm (e.g. the app
+      // restarts within the catch-up window after the caregiver stopped).
+      final alreadyHandled = _events.any((e) =>
+          (e.type == 'taken' ||
+              e.type == 'caregiver_stopped' ||
+              e.type == 'missed') &&
           e.sensorNumber == s.sensorNumber &&
           _isSameDay(e.occurredAt, now));
-      if (alreadyTaken) continue;
+      if (alreadyHandled) continue;
+
+      // The box already reported this reminder; ringing again would double
+      // up on the phone and insert a duplicate row.
+      if (hasActiveAlarm && _events.first.sensorNumber == s.sensorNumber) {
+        debugPrint('[repo] local dose already ringing sensor=${s.sensorNumber}');
+        continue;
+      }
 
       debugPrint('[repo] local dose alarm sensor=${s.sensorNumber} '
-          'at ${s.timeLabel}');
+          'at ${s.timeLabel} (late ${now.difference(due).inSeconds}s)');
       _handleLocalEvent(
         DoseEvent(
           type: 'reminder_started',
@@ -169,9 +251,21 @@ class CareCubeRepository extends ChangeNotifier {
   Future<void> _onStatus(BoxReading reading) async {
     _latestReading = reading;
     _lastSynced = DateTime.now();
+    _lastReadingAt = _lastSynced;
     notifyListeners();
+
+    final boxId = _boxId;
+    if (boxId == null) return;
+
+    final now = DateTime.now();
+    if (_lastReadingPersistAt != null &&
+        now.difference(_lastReadingPersistAt!) < _readingPersistInterval) {
+      return;
+    }
+    _lastReadingPersistAt = now;
+
     try {
-      await SupabaseService.insertBoxReading(reading.toDbMap(_boxId!));
+      await SupabaseService.insertBoxReading(reading.toDbMap(boxId));
     } catch (e) {
       debugPrint('Failed to persist reading: $e');
     }
@@ -185,44 +279,93 @@ class CareCubeRepository extends ChangeNotifier {
   /// updates the feed, drives the phone alarm + notification, and
   /// optionally mirrors the event into Supabase.
   void _handleLocalEvent(DoseEvent event, {bool persist = false}) {
-    _events.insert(0, event);
-    if (_events.length > 200) {
-      _events.removeRange(200, _events.length);
-    }
-    _lastSynced = DateTime.now();
-    notifyListeners();
+    // The box repeats `reminder_started` while a dose is still outstanding
+    // (so a phone that missed the first event rings again). Repeats must
+    // not stack up in the feed as if they were separate doses.
+    final isRepeat = event.isActiveAlarm &&
+        hasActiveAlarm &&
+        _activeAlarmBay == event.sensorNumber &&
+        _events.first.type == event.type;
 
-    // A resolution event clears today's local-trigger key for that sensor
-    // so a later (manual) re-ring is possible; the per-day + per-minute
-    // checks elsewhere prevent duplicates.
-    if (!event.isActiveAlarm) {
-      final now = DateTime.now();
-      _localAlarmKeys.remove(
-          '${now.year}-${now.month}-${now.day}|${event.sensorNumber}');
+    // A `caregiver_stopped` echo of a stop we already applied locally must
+    // not appear twice in the feed. The echo is still persisted (below); it
+    // only skips the duplicate feed row.
+    final isDuplicateResolution = !event.isActiveAlarm &&
+        event.type == 'caregiver_stopped' &&
+        _events.isNotEmpty &&
+        _events.first.type == 'caregiver_stopped' &&
+        _events.first.sensorNumber == event.sensorNumber &&
+        DateTime.now().difference(_events.first.occurredAt).abs() <
+            const Duration(seconds: 30);
+
+    if (!isRepeat && !isDuplicateResolution) {
+      _events.insert(0, event);
+      if (_events.length > 200) {
+        _events.removeRange(200, _events.length);
+      }
+      _lastSynced = DateTime.now();
+      notifyListeners();
     }
+
+    // Note: a resolution event intentionally does NOT clear the per-day
+    // local-ring key. Clearing it let the phone's own scanner re-fire the
+    // same dose for the rest of the catch-up window (a "phantom" alarm
+    // several minutes after the box's alarm was stopped). Keys are
+    // date-scoped (`yyyy-m-d|slot`) so they naturally reset each day, and
+    // stay set once a dose has rung so it never rings twice in one day.
 
     // Phone-side alarm: ring + notify when the box starts an alarm, and
     // ring off as soon as an event resolves it (taken / stopped / missed).
     if (event.isActiveAlarm) {
+      _activeAlarmBay = event.sensorNumber;
       final isEmergency = event.type == 'emergency_taken';
       if (!AlarmSoundService().isRinging) {
+        AlarmSoundService().startAlarm();
+      } else if (isRepeat) {
+        // Already ringing - make sure it has not gone quiet.
         AlarmSoundService().startAlarm();
       }
       NotificationService().showAlarmNotification(
         title: isEmergency ? 'Emergency dose taken' : 'Time for your dose',
-        body: 'Sensor bay ${event.sensorNumber} is ringing. '
+        body: '${MedicineSchedule.labelForBay(event.sensorNumber)} is ringing. '
             '${isEmergency ? 'Please take the emergency dose.' : 'Please take your medicine.'}',
       );
     } else {
-      AlarmSoundService().stopAlarm();
+      // Only an event about the bay that is actually ringing may silence
+      // it. Previously any non-alarm event stopped every alarm, so an
+      // unrelated `taken` arriving out of order cut a live alarm short.
+      final stopsCurrentAlarm = _activeAlarmBay == null ||
+          _activeAlarmBay == event.sensorNumber ||
+          event.type == 'caregiver_stopped';
+      if (stopsCurrentAlarm) {
+        _activeAlarmBay = null;
+        AlarmSoundService().stopAlarm();
+      }
+
+      // The dose is now handled (taken or stopped): its schedule has
+      // served its purpose. Remove it automatically so the medicine list
+      // only shows still-pending doses and the box stops scheduling it.
+      if (event.type == 'taken' || event.type == 'caregiver_stopped') {
+        _maybeAutoRemoveSchedule(event.sensorNumber);
+      }
     }
 
-    if (persist && _boxId != null) {
+    if (persist && _boxId != null && !isRepeat) {
       SupabaseService.insertDoseEvent(event.toDbMap(_boxId!))
           .catchError((e) {
         debugPrint('Failed to persist event: $e');
       });
     }
+  }
+
+  /// Re-derive which bay is ringing from the head of the feed. Used after
+  /// the feed is (re)loaded so a restart or a refresh does not lose track of
+  /// an alarm that is still outstanding.
+  void _syncActiveAlarmBay() {
+    _activeAlarmBay =
+        (_events.isNotEmpty && _events.first.isActiveAlarm)
+            ? _events.first.sensorNumber
+            : null;
   }
 
   /// Reload schedules, events and the latest reading from Supabase.
@@ -240,6 +383,7 @@ class CareCubeRepository extends ChangeNotifier {
     _events
       ..clear()
       ..addAll(events.map(DoseEvent.fromMap));
+    _syncActiveAlarmBay();
 
     final reading = await SupabaseService.fetchLatestReading(boxId);
     _latestReading = reading == null ? null : BoxReading.fromMap(reading);
@@ -283,6 +427,23 @@ class CareCubeRepository extends ChangeNotifier {
     await _pushScheduleToFirmware();
   }
 
+  /// Automatically remove the schedule for a bay whose dose has just been
+  /// handled (taken or caregiver-stopped). One schedule per compartment, so
+  /// the sensor number uniquely identifies it. Failures are non-fatal: the
+  /// reminder simply stays and the caregiver can delete it manually.
+  void _maybeAutoRemoveSchedule(int sensorNumber) {
+    for (final s in _schedules) {
+      if (s.sensorNumber == sensorNumber && s.id != null) {
+        debugPrint('[repo] auto-remove resolved schedule id=${s.id} '
+            'sensor=$sensorNumber ${s.bayLabel} ${s.timeLabel}');
+        deleteSchedule(s.id!).catchError((e) {
+          debugPrint('Failed to auto-remove schedule: $e');
+        });
+        return;
+      }
+    }
+  }
+
   Future<void> _reloadSchedules() async {
     final fetched = await SupabaseService.fetchSchedules(_boxId!);
     debugPrint('[repo] _reloadSchedules box=$_boxId count=${fetched.length}');
@@ -297,18 +458,28 @@ class CareCubeRepository extends ChangeNotifier {
   }
 
   // ---- Caregiver action ----
+  /// Caregiver-initiated stop. Silences the button's buzzer and this phone
+  /// immediately, then tells the firmware to stop. The box echoes a
+  /// `caregiver_stopped` event which keeps the feed (and every other phone)
+  /// in sync. This is the only path other than actually taking the dose
+  /// that is allowed to end an alarm.
   void caregiverStopAlarm() {
+    _activeAlarmBay = null;
+    AlarmSoundService().stopAlarm();
     _mqtt.stopAlarm();
+    notifyListeners();
   }
 
-  /// Dismiss any ringing alarm and clear the on-screen alert feed.
-  /// History is kept in Supabase; this only clears the local view.
+  /// Clear the local view of the alert feed. History is kept in Supabase.
+  ///
+  /// Deliberately does NOT stop a ringing alarm or publish `alarm/stop`:
+  /// the buzzer and phone alarm may only be silenced by taking the dose or
+  /// by a caregiver. The outstanding alarm event is kept at the head of the
+  /// feed so its banner and the ringing continue on the patient side.
   void clearAlerts() {
-    if (hasActiveAlarm) {
-      _mqtt.stopAlarm();
-    }
-    AlarmSoundService().stopAlarm();
+    final active = hasActiveAlarm ? _events.first : null;
     _events.clear();
+    if (active != null) _events.add(active);
     _lastSynced = DateTime.now();
     notifyListeners();
   }
@@ -319,7 +490,11 @@ class CareCubeRepository extends ChangeNotifier {
     AlarmSoundService().stopAlarm();
     _scheduleTimer?.cancel();
     _scheduleTimer = null;
+    _freshnessTimer?.cancel();
+    _freshnessTimer = null;
+    _lastReadingPersistAt = null;
     _localAlarmKeys.clear();
+    _activeAlarmBay = null;
     for (final s in _subs) {
       await s.cancel();
     }
@@ -339,6 +514,8 @@ class CareCubeRepository extends ChangeNotifier {
   void dispose() {
     _scheduleTimer?.cancel();
     _scheduleTimer = null;
+    _freshnessTimer?.cancel();
+    _freshnessTimer = null;
     _localAlarmKeys.clear();
     for (final s in _subs) {
       s.cancel();
