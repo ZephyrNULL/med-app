@@ -94,12 +94,46 @@ VL53L0X sensor7;
 // ======================================================
 // BUZZER
 // ======================================================
+// GPIO2 is a boot-strapping pin: it MUST be low while the chip resets.
+// Leave the wire alone unless your board drives the buzzer through a
+// transistor. Flip the two switches below to match your hardware:
+//   BUZZER_ACTIVE_LOW  1 = transistor / active-low module (HIGH = off)
+//   BUZZER_PASSIVE     1 = self-driving piezo element needs a tone, not DC
 #define BUZZER 2
+#define BUZZER_ACTIVE_LOW 0
+#define BUZZER_PASSIVE 0
+#define BUZZER_TONE_HZ 2000
 
 // ======================================================
 // MEDICINE DISTANCE THRESHOLD
 // ======================================================
+// A dose counts as "taken" only when the bay reads FARTHER than this.
 #define MEDICINE_THRESHOLD 90
+
+// VL53L0X returns -1 on timeout and saturates at 8190mm. Anything outside
+// this range is a glitch, NOT a real measurement - treating it as a real
+// one is what made the box report "MEDICINE TAKEN" on its own.
+#define SENSOR_MIN_VALID_MM 10
+#define SENSOR_MAX_VALID_MM 2000
+
+// ======================================================
+// REMINDER CONFIRMATION TIMING
+// ======================================================
+// The buzzer must ring for this long before a pickup can be confirmed, and
+// the bay must have been seen holding a dose first - otherwise a single
+// bad sample silences the alarm on its own.
+const unsigned long TAKEN_MIN_ELAPSED      = 5000UL;
+const unsigned long TAKEN_EMPTY_BAY_GRACE  = 90000UL;
+const int           REQUIRED_TAKEN_READINGS = 3;
+
+// How late a dose may still fire. Absorbs loop jitter (the full sensor
+// sweep can take seconds) and a reboot/boot inside the dose window.
+const unsigned long REMINDER_CATCHUP_MS = 10UL * 60UL * 1000UL;
+
+// Re-publish the reminder while it is still ringing so the phone rings
+// again even if it missed (or was killed during) the first event.
+const unsigned long REMINDER_REPUBLISH_MS = 30000UL;
+const unsigned long REMINDER_REPUBLISH_UNTIL_MS = 15UL * 60UL * 1000UL;
 
 // ======================================================
 // DOSE SCHEDULE (6 slots)
@@ -119,6 +153,24 @@ const int EMERGENCY_SLOT = 6;
 // DAILY DOSE FLAGS
 // ======================================================
 int activeReminder = -1;
+
+// Monotonic day stamp (yyyy*10000 + mm*100 + dd) of the day the
+// doseTriggered[] flags belong to. Rolling over on a *change* of day
+// (rather than at exactly 00:00:00) means one slow loop iteration can no
+// longer disable every reminder for the rest of the day.
+int currentDayStamp = -1;
+
+// Tracking state for the running reminder.
+unsigned long reminderStartTime = 0;
+unsigned long lastReminderRepublish = 0;
+int takenReadingCount = 0;
+bool baySeenOccupied = false;
+
+// ======================================================
+// BUZZER STATE
+// ======================================================
+bool buzzerActive = false;
+unsigned long lastBuzzerToggle = 0;
 
 // ======================================================
 // DISPLAY STATES
@@ -150,6 +202,11 @@ int distance5 = 0;
 int distance6 = 0;
 int distance7 = 0;
 
+// A missing/flaky bay must degrade to "never taken", never take the whole
+// box offline the way the old `while(1)` did.
+bool sensorOk[7] = {false, false, false, false, false, false, false};
+bool rtcOk = false;
+
 // ======================================================
 // ENVIRONMENT
 // ======================================================
@@ -161,7 +218,15 @@ unsigned long lastDHTRead = 0;
 // MQTT PUBLISH TIMER
 // ======================================================
 unsigned long lastMQTTPublish = 0;
-const unsigned long MQTT_PUBLISH_INTERVAL = 30000UL;
+// Heartbeat only: the environment is published every time a fresh DHT sample
+// lands (every 2s), so the app and the LCD agree. This slower timer just
+// proves the box is alive if the DHT stops producing samples.
+const unsigned long MQTT_HEARTBEAT_INTERVAL = 30000UL;
+
+// A drifting RTC eventually lands a dose in the wrong minute, which reads
+// as a reminder that "never rang". Re-sync every few hours when online.
+unsigned long lastClockSync = 0;
+const unsigned long CLOCK_SYNC_INTERVAL = 6UL * 60UL * 60UL * 1000UL;
 
 // ======================================================
 // PREVIOUS S7 DISTANCE
@@ -179,10 +244,91 @@ bool emergencyTriggered = false;
 unsigned long lastLCDUpdate = 0;
 
 // ======================================================
-// MEDICINE TAKEN CONFIRMATION
+// BUZZER DRIVER
 // ======================================================
-int medicineTakenCount = 0;
-const int REQUIRED_TAKEN_READINGS = 3;
+// A steady DC level is inaudible on a passive element and easy to miss on
+// an active one, so the buzzer is pulsed. This also keeps the GPIO toggling
+// so a marginal module gets a clean signal instead of one long level.
+// ======================================================
+void writeBuzzerLevel(bool on) {
+#if BUZZER_ACTIVE_LOW
+  digitalWrite(BUZZER, on ? LOW : HIGH);
+#else
+  digitalWrite(BUZZER, on ? HIGH : LOW);
+#endif
+}
+
+void buzzerSetup() {
+  pinMode(BUZZER, OUTPUT);
+  writeBuzzerLevel(false);
+  buzzerActive = false;
+#if BUZZER_PASSIVE
+  ledcSetup(0, 2000, 10);
+  ledcAttachPin(BUZZER, 0);
+  ledcWrite(0, 0);
+#endif
+}
+
+void setBuzzer(bool on) {
+  if (buzzerActive == on) return;
+  buzzerActive = on;
+  if (!on) {
+#if BUZZER_PASSIVE
+    ledcWrite(0, 0);
+#endif
+    writeBuzzerLevel(false);
+    return;
+  }
+#if BUZZER_PASSIVE
+  ledcWriteTone(0, BUZZER_TONE_HZ);
+#else
+  writeBuzzerLevel(true);
+#endif
+}
+
+// Pulse the buzzer while an alarm is active. Call once per loop.
+void serviceBuzzer() {
+  if (!buzzerActive) return;
+  if (millis() - lastBuzzerToggle < 250UL) return;
+  lastBuzzerToggle = millis();
+  // A passive element already makes sound from the tone; pulsing it just
+  // chops it up. An active buzzer needs the pulsing to be clearly heard.
+#if !BUZZER_PASSIVE
+  if (digitalRead(BUZZER) == (BUZZER_ACTIVE_LOW ? LOW : HIGH)) {
+    writeBuzzerLevel(false);
+  } else {
+    writeBuzzerLevel(true);
+  }
+#endif
+}
+
+// ======================================================
+// READING VALIDITY
+// ======================================================
+bool isValidDistance(int mm) {
+  return mm >= SENSOR_MIN_VALID_MM && mm <= SENSOR_MAX_VALID_MM;
+}
+
+bool isSensorOk(int sensorNumber) {
+  if (sensorNumber < 0 || sensorNumber > 6) return false;
+  return sensorOk[sensorNumber];
+}
+
+// ======================================================
+// CLOCK SOURCE (RTC, falling back to NTP/millis if the RTC is missing)
+// ======================================================
+DateTime currentDateTime() {
+  if (rtcOk) return rtc.now();
+  time_t t = time(nullptr);
+  if (t > 1700000000UL) {
+    return DateTime((uint32_t)t);
+  }
+  return DateTime(2024, 1, 1, 0, 0, 0);
+}
+
+int dayStampOf(const DateTime& dt) {
+  return dt.year() * 10000 + dt.month() * 100 + dt.day();
+}
 
 // ======================================================
 // TURN OFF ALL LEDs
@@ -222,7 +368,7 @@ int getSensorDistance(int sensorNumber) {
   else if (sensorNumber == 4) return distance5;
   else if (sensorNumber == 5) return distance6;
   else if (sensorNumber == 6) return distance7;
-  return 0;
+  return -1; // unknown bay: never report a usable distance
 }
 
 // ======================================================
@@ -260,31 +406,123 @@ int getNextDoseIndex(DateTime now) {
 }
 
 // ======================================================
-// READ ALL VL53L0X SENSORS
+// IS A DOSE DUE?
 // ======================================================
-void readAllSensors() {
-  distance1 = sensor1.readRangeContinuousMillimeters();
-  distance2 = sensor2.readRangeContinuousMillimeters();
-  distance3 = sensor3.readRangeContinuousMillimeters();
-  distance4 = sensor4.readRangeContinuousMillimeters();
-  distance5 = sensor5.readRangeContinuousMillimeters();
-  distance6 = sensor6.readRangeContinuousMillimeters();
-  distance7 = sensor7.readRangeContinuousMillimeters();
+// Compares "has the dose time passed" instead of "is the clock exactly on
+// the dose time". One loop iteration can take several seconds (a full
+// sensor sweep plus the LCD redraw), so an exact hour==doseHour &&
+// minute==doseMinute test silently skipped the dose whenever a sweep
+// straddled the minute boundary. A missed dose then never fired at all,
+// which is exactly the "buzzer does not ring" symptom.
+//
+// [lateByMs] is how long past its dose time this is; the caller only fires
+// while that stays inside REMINDER_CATCHUP_MS so an old dose from earlier
+// today is not resurrected on boot.
+bool isDoseDue(int i, const DateTime& now, unsigned long* lateByMs) {
+  if (!doseEnabled[i]) return false;
+  if (doseTriggered[i]) return false;
+
+  long dueMinutes = (long)doseHour[i] * 60L + doseMinute[i];
+  long nowMinutes = (long)now.hour() * 60L + now.minute();
+
+  long delta = nowMinutes - dueMinutes;
+  if (delta < 0) return false; // not yet
+
+  // Same minute, or up to the catch-up window late.
+  if (delta > (long)(REMINDER_CATCHUP_MS / 60000UL)) return false;
+
+  if (lateByMs != NULL) *lateByMs = (unsigned long)(delta * 60000UL);
+  return true;
 }
 
 // ======================================================
-// READ DHT22
+// ROLL OVER DAILY DOSE FLAGS
 // ======================================================
-void readDHT22() {
-  if (millis() - lastDHTRead >= 2000) {
-    lastDHTRead = millis();
-    float newHumidity = dht.readHumidity();
-    float newTemperature = dht.readTemperature();
-    if (!isnan(newHumidity) && !isnan(newTemperature)) {
-      humidity = newHumidity;
-      temperature = newTemperature;
-    }
+void rollOverDoseFlags(const DateTime& now) {
+  int stamp = dayStampOf(now);
+  if (stamp == currentDayStamp) return;
+
+  // Guard against the RTC stepping backwards (a bad NTP sync) wiping a
+  // day that is already in progress.
+  if (stamp < currentDayStamp) return;
+
+  for (int i = 0; i < 6; i++) doseTriggered[i] = false;
+  currentDayStamp = stamp;
+
+  Serial.print("New day (");
+  Serial.print(stamp);
+  Serial.println(") - daily dose flags reset");
+}
+
+// ======================================================
+// INIT ONE BAY SENSOR
+// ======================================================
+// Powers a single bay, re-addresses it, and starts continuous ranging.
+// Returns false instead of halting, so one bad bay costs you that bay's
+// dose confirmation rather than the whole device.
+bool initSensor(int index, VL53L0X& sensor, int xshutPin, uint8_t address) {
+  digitalWrite(xshutPin, LOW);
+  delay(20);
+  digitalWrite(xshutPin, HIGH);
+  delay(100); // front-end power-up
+
+  if (!sensor.init()) {
+    Serial.print("Bay ");
+    Serial.print(index + 1);
+    Serial.println(" NOT FOUND - bay disabled");
+    sensorOk[index] = false;
+    digitalWrite(xshutPin, LOW); // keep it off so it cannot disturb the bus
+    return false;
   }
+
+  sensor.setAddress(address);
+  // 300ms keeps a full sweep fast enough that the alarm loop stays tight;
+  // the old 500ms let one sweep stall the whole loop for seconds.
+  sensor.setTimeout(300);
+  sensor.startContinuous();
+  sensorOk[index] = true;
+
+  Serial.print("Bay ");
+  Serial.print(index + 1);
+  Serial.print(" online @ 0x");
+  Serial.println(address, HEX);
+  return true;
+}
+
+// ======================================================
+// READ ALL VL53L0X SENSORS
+// ======================================================
+// Only bays that initialised are polled. A dead bay is skipped rather than
+// blocking the loop on its I2C timeout, which keeps the alarm loop tight.
+void readAllSensors() {
+  if (sensorOk[0]) distance1 = sensor1.readRangeContinuousMillimeters();
+  if (sensorOk[1]) distance2 = sensor2.readRangeContinuousMillimeters();
+  if (sensorOk[2]) distance3 = sensor3.readRangeContinuousMillimeters();
+  if (sensorOk[3]) distance4 = sensor4.readRangeContinuousMillimeters();
+  if (sensorOk[4]) distance5 = sensor5.readRangeContinuousMillimeters();
+  if (sensorOk[5]) distance6 = sensor6.readRangeContinuousMillimeters();
+  if (sensorOk[6]) distance7 = sensor7.readRangeContinuousMillimeters();
+}
+
+// ======================================================
+// DHT22
+// ======================================================
+// The DHT22 refuses to be read faster than every 2s. Returning true only
+// when a fresh sample landed lets the loop publish the exact value the LCD
+// is showing, instead of republishing a stale one.
+const unsigned long DHT_READ_INTERVAL = 2000UL;
+
+bool readDHT22() {
+  if (millis() - lastDHTRead < DHT_READ_INTERVAL) return false;
+  lastDHTRead = millis();
+
+  float newHumidity = dht.readHumidity();
+  float newTemperature = dht.readTemperature();
+  if (isnan(newHumidity) || isnan(newTemperature)) return false;
+
+humidity = newHumidity;
+  temperature = newTemperature;
+  return true;
 }
 
 // ======================================================
@@ -329,7 +567,7 @@ void saveSettingsAndReboot(const char* ssid, const char* pass, const char* newDe
   deviceId = (newDeviceId[0] == 0) ? DEFAULT_DEVICE_ID : String(newDeviceId);
   prefs.putString("ssid", ssid);
   prefs.putString("pass", pass);
-  prefs.putString("device_id", deviceId);
+  prefs.putString("device_id", deviceId.c_str());
   Serial.println("Settings saved - rebooting into normal mode");
   ESP.restart();
 }
@@ -358,7 +596,7 @@ void startSetupPortal() {
 
   if (wm.startConfigPortal("CareCube-Setup")) {
     saveSettingsAndReboot(wm.getWiFiSSID().c_str(), wm.getWiFiPass().c_str(),
-                          deviceParam.getValue());
+                          deviceParam.getValue().c_str());
   } else {
     Serial.println("Setup portal timed out - no config, staying unconfigured");
     lcd.clear();
@@ -527,7 +765,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       Serial.print("  Slot ");
       Serial.print(i);
       Serial.print(": S");
-      Serial.print(doseSensor[i]);
+      Serial.print(doseSensor[i] + 1);
       Serial.print(" ");
       if (doseHour[i] < 10) Serial.print("0");
       Serial.print(doseHour[i]);
@@ -536,6 +774,21 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       Serial.print(doseMinute[i]);
       Serial.print(" ");
       Serial.println(doseEnabled[i] ? "ON" : "OFF");
+
+      // A slot whose time was moved must be allowed to fire again at its
+      // new time, otherwise an edit silently disables that dose for today.
+      doseTriggered[i] = false;
+    }
+
+    // If the slot the running reminder belongs to was disabled, stop it
+    // rather than leaving the buzzer on for a dose that no longer exists.
+    if (activeReminder >= 0 && activeReminder < 6 && !doseEnabled[activeReminder]) {
+      Serial.println("Active slot disabled by schedule update - clearing alarm");
+      setBuzzer(false);
+      turnOffAllLEDs();
+      displayState = MAIN_SCREEN;
+      activeReminder = -1;
+      lcd.clear();
     }
   }
 
@@ -546,15 +799,22 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     if (displayState == MEDICINE_REMINDER || displayState == EMERGENCY_TAKEN) {
       Serial.println("Alarm stopped by caregiver");
 
-      digitalWrite(BUZZER, LOW);
+      // activeReminder is -1 during an emergency, so doseSensor[-1] would
+      // read out of bounds and report a nonsense bay.
+      int stoppedBay = (activeReminder >= 0 && activeReminder < 6)
+                           ? doseSensor[activeReminder] + 1
+                           : 7;
+
+      setBuzzer(false);
       turnOffAllLEDs();
 
-      publishEvent("caregiver_stopped", doseSensor[activeReminder] + 1);
+      publishEvent("caregiver_stopped", stoppedBay);
 
       displayState = MAIN_SCREEN;
       activeReminder = -1;
       emergencyTriggered = false;
-      medicineTakenCount = 0;
+      takenReadingCount = 0;
+      baySeenOccupied = false;
       lcd.clear();
     }
   }
@@ -609,12 +869,13 @@ void publishEvent(const char* eventType, int sensorNumber) {
 // ======================================================
 // UNIX TIME
 // Real wall-clock epoch so the app stores correct event dates.
-// Fallbacks to the DS1307 if NTP has not synced yet.
+// Falls back to NTP/millis time if NTP has not synced yet.
 // ======================================================
 time_t nowUnix() {
   time_t t = time(nullptr);
   if (t < 1700000000UL) {
-    return rtc.now().unixtime();
+    if (rtcOk) return rtc.now().unixtime();
+    return (time_t)0;
   }
   return t;
 }
@@ -623,9 +884,11 @@ void syncRtcFromNtp() {
   configTime(0, 0, "pool.ntp.org", "time.google.com");
   struct tm tmv;
   if (getLocalTime(&tmv, 5000)) {
-    rtc.adjust(DateTime(tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
-                        tmv.tm_hour, tmv.tm_min, tmv.tm_sec));
-    Serial.println("RTC synced from NTP");
+    if (rtcOk) {
+      rtc.adjust(DateTime(tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                          tmv.tm_hour, tmv.tm_min, tmv.tm_sec));
+    }
+    Serial.println("Clock synced from NTP");
   } else {
     Serial.println("NTP sync failed - keeping RTC time");
   }
@@ -788,14 +1051,8 @@ void setup() {
   }
 
   // ====================================================
-  // KEEP RTC ACCURATE (dose times + event timestamps)
-  // ====================================================
-  if (WiFi.status() == WL_CONNECTED) {
-    syncRtcFromNtp();
-  }
-
-  // ====================================================
-  // LEDs
+  // BUZZER + LEDs
+  // Set up before anything else can sound an alarm.
   // ====================================================
   pinMode(LED_1, OUTPUT);
   pinMode(LED_2, OUTPUT);
@@ -805,12 +1062,7 @@ void setup() {
   pinMode(LED_6, OUTPUT);
   pinMode(LED_7, OUTPUT);
   turnOffAllLEDs();
-
-  // ====================================================
-  // BUZZER
-  // ====================================================
-  pinMode(BUZZER, OUTPUT);
-  digitalWrite(BUZZER, LOW);
+  buzzerSetup();
 
   // ====================================================
   // DHT22
@@ -838,92 +1090,51 @@ void setup() {
   delay(100);
 
   // ====================================================
-  // SENSOR 1
+  // SENSOR INIT (fault tolerant)
   // ====================================================
-  digitalWrite(XSHUT_1, HIGH);
-  delay(100);
-  if (!sensor1.init()) { Serial.println("Sensor 1 NOT FOUND!"); while (1); }
-  sensor1.setAddress(0x30);
-  sensor1.setTimeout(500);
-  sensor1.startContinuous();
+  // A bay that fails to answer is marked unavailable and skipped from then
+  // on. The previous `while (1)` here meant a single flaky VL53L0X froze
+  // the entire box at the boot screen: no buzzer, no reminders, no MQTT -
+  // for the rest of the day, with no way to recover without a reflash.
+  //
+  // Bays are powered one at a time on purpose: they all answer on 0x29
+  // until re-addressed, so leaving several enabled at once would make
+  // setAddress() hit all of them together.
+  initSensor(0, sensor1, XSHUT_1, 0x30);
+  initSensor(1, sensor2, XSHUT_2, 0x31);
+  initSensor(2, sensor3, XSHUT_3, 0x32);
+  initSensor(3, sensor4, XSHUT_4, 0x33);
+  initSensor(4, sensor5, XSHUT_5, 0x34);
+  initSensor(5, sensor6, XSHUT_6, 0x35);
+  initSensor(6, sensor7, XSHUT_7, 0x36); // bay 7 = emergency
 
-  // ====================================================
-  // SENSOR 2
-  // ====================================================
-  digitalWrite(XSHUT_2, HIGH);
-  delay(100);
-  if (!sensor2.init()) { Serial.println("Sensor 2 NOT FOUND!"); while (1); }
-  sensor2.setAddress(0x31);
-  sensor2.setTimeout(500);
-  sensor2.startContinuous();
-
-  // ====================================================
-  // SENSOR 3
-  // ====================================================
-  digitalWrite(XSHUT_3, HIGH);
-  delay(100);
-  if (!sensor3.init()) { Serial.println("Sensor 3 NOT FOUND!"); while (1); }
-  sensor3.setAddress(0x32);
-  sensor3.setTimeout(500);
-  sensor3.startContinuous();
-
-  // ====================================================
-  // SENSOR 4
-  // ====================================================
-  digitalWrite(XSHUT_4, HIGH);
-  delay(100);
-  if (!sensor4.init()) { Serial.println("Sensor 4 NOT FOUND!"); while (1); }
-  sensor4.setAddress(0x33);
-  sensor4.setTimeout(500);
-  sensor4.startContinuous();
-
-  // ====================================================
-  // SENSOR 5
-  // ====================================================
-  digitalWrite(XSHUT_5, HIGH);
-  delay(100);
-  if (!sensor5.init()) { Serial.println("Sensor 5 NOT FOUND!"); while (1); }
-  sensor5.setAddress(0x34);
-  sensor5.setTimeout(500);
-  sensor5.startContinuous();
-
-  // ====================================================
-  // SENSOR 6
-  // ====================================================
-  digitalWrite(XSHUT_6, HIGH);
-  delay(100);
-  if (!sensor6.init()) { Serial.println("Sensor 6 NOT FOUND!"); while (1); }
-  sensor6.setAddress(0x35);
-  sensor6.setTimeout(500);
-  sensor6.startContinuous();
-
-  // ====================================================
-  // SENSOR 7 - EMERGENCY
-  // ====================================================
-  digitalWrite(XSHUT_7, HIGH);
-  delay(100);
-  if (!sensor7.init()) { Serial.println("Sensor 7 NOT FOUND!"); while (1); }
-  sensor7.setAddress(0x36);
-  sensor7.setTimeout(500);
-  sensor7.startContinuous();
+  // Give the ranging engines time to settle; the first samples out of
+  // continuous mode are garbage and must not be treated as a pickup.
+  delay(300);
 
   // ====================================================
   // RTC
   // ====================================================
-  if (!rtc.begin()) {
-    Serial.println("RTC NOT FOUND!");
-    lcd.init();
-    lcd.backlight();
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("RTC NOT FOUND!");
-    while (1);
-  }
-
-  if (rtc.lostPower()) {
+  rtcOk = rtc.begin();
+  if (!rtcOk) {
+    // No RTC: keep running on NTP/millis time rather than halting. Dose
+    // times are then only as good as the network, which is strictly
+    // better than a box that never rings again.
+    Serial.println("RTC NOT FOUND - continuing on NTP time");
+  } else if (rtc.lostPower()) {
     Serial.println("RTC lost power!");
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
     Serial.println("RTC time updated.");
+  }
+
+  // ====================================================
+  // KEEP THE CLOCK ACCURATE (dose times + event timestamps)
+  // ====================================================
+  // Runs after the RTC exists so the adjust actually lands. An RTC that
+  // drifts makes a dose fire at the wrong minute - which is one of the
+  // reasons reminders seemed to be skipped.
+  if (WiFi.status() == WL_CONNECTED) {
+    syncRtcFromNtp();
   }
 
   // ====================================================
@@ -934,6 +1145,20 @@ void setup() {
   lcd.print("     CARE CUBE");
   lcd.setCursor(0, 1);
   lcd.print("  MEDICINE SYSTEM");
+
+  int missing = 0;
+  for (int i = 0; i < 7; i++) if (!sensorOk[i]) missing++;
+
+  if (missing > 0) {
+    lcd.setCursor(0, 2);
+    lcd.print("  BAY SENSOR FAULT");
+    lcd.setCursor(0, 3);
+    lcd.print("   CHECK ");
+    lcd.print(missing);
+    lcd.print(" OF 7 BAYS");
+    delay(3000);
+  }
+
   lcd.setCursor(0, 2);
   lcd.print("   SYSTEM READY");
   lcd.setCursor(0, 3);
@@ -943,11 +1168,25 @@ void setup() {
   // ====================================================
   // INITIAL EMERGENCY SENSOR READING
   // ====================================================
-  previousDistance7 = sensor7.readRangeContinuousMillimeters();
+  // Seed with a real reading; -1 (invalid) must never be used as the
+  // "previous" edge for the emergency comparator.
+  previousDistance7 = 0;
+  if (sensorOk[6]) {
+    int first = sensor7.readRangeContinuousMillimeters();
+    previousDistance7 = isValidDistance(first) ? first : 0;
+  }
+
+  rollOverDoseFlags(currentDateTime());
 
   Serial.println("==============================");
   Serial.println("      CARE CUBE READY");
   Serial.println("==============================");
+  if (missing > 0) {
+    Serial.print("WARNING: ");
+    Serial.print(missing);
+    Serial.println(" bay sensor(s) unavailable - those bays cannot confirm a dose");
+  }
+  if (!rtcOk) Serial.println("WARNING: no RTC - running on NTP time");
   Serial.println("MQTT Topics:");
   Serial.print("  Schedule: ");
   Serial.println(topicScheduleSet);
@@ -963,7 +1202,7 @@ void setup() {
 // LOOP
 // ======================================================
 void loop() {
-  DateTime now = rtc.now();
+  DateTime now = currentDateTime();
 
   // ====================================================
   // MQTT LOOP
@@ -983,6 +1222,15 @@ void loop() {
   }
 
   // ====================================================
+  // KEEP THE CLOCK HONEST
+  // ====================================================
+  if (rtcOk && WiFi.status() == WL_CONNECTED &&
+      millis() - lastClockSync >= CLOCK_SYNC_INTERVAL) {
+    lastClockSync = millis();
+    syncRtcFromNtp();
+  }
+
+  // ====================================================
   // READ ALL VL53L0X SENSORS
   // ====================================================
   readAllSensors();
@@ -990,21 +1238,25 @@ void loop() {
   // ====================================================
   // READ DHT22
   // ====================================================
-  readDHT22();
+  bool freshEnvironment = readDHT22();
 
   // ====================================================
-  // RESET DAILY DOSE FLAGS AT MIDNIGHT
+  // RESET DAILY DOSE FLAGS WHEN THE DAY CHANGES
   // ====================================================
-  if (now.hour() == 0 && now.minute() == 0 && now.second() == 0) {
-    for (int i = 0; i < 6; i++) {
-      doseTriggered[i] = false;
-    }
-  }
+  // Keyed off a day stamp instead of second==0: with a full sensor sweep
+  // in the loop the midnight second is easy to step straight over, and a
+  // missed reset means no dose fires at all for the rest of the day.
+  rollOverDoseFlags(now);
 
   // ====================================================
-  // PUBLISH STATUS EVERY 30 SECONDS
+  // PUBLISH ENVIRONMENT
   // ====================================================
-  if (millis() - lastMQTTPublish >= MQTT_PUBLISH_INTERVAL) {
+  // Publish the moment a new sample arrives, in the same loop iteration that
+  // redraws the LCD, so both always show the same numbers. Publishing on a
+  // fixed 30s timer is what made the app look frozen and drift a few tenths
+  // behind the LCD.
+  if (freshEnvironment ||
+      millis() - lastMQTTPublish >= MQTT_HEARTBEAT_INTERVAL) {
     lastMQTTPublish = millis();
     publishStatus();
   }
@@ -1016,14 +1268,18 @@ void loop() {
       displayState == MAIN_SCREEN &&
       !emergencyTriggered)
   {
-    if (previousDistance7 <= MEDICINE_THRESHOLD &&
+    // Both edges must be real readings, otherwise a glitch across the
+    // threshold reports a phantom emergency dose.
+    if (isValidDistance(previousDistance7) &&
+        isValidDistance(distance7) &&
+        previousDistance7 <= MEDICINE_THRESHOLD &&
         distance7 > MEDICINE_THRESHOLD)
     {
       emergencyTriggered = true;
       displayState = EMERGENCY_TAKEN;
       messageStartTime = millis();
       turnOnLED(6);
-      digitalWrite(BUZZER, HIGH);
+      setBuzzer(true);
 
       publishEvent("emergency_taken", 7);
 
@@ -1034,26 +1290,27 @@ void loop() {
     }
   }
 
-  previousDistance7 = distance7;
+  if (isValidDistance(distance7)) previousDistance7 = distance7;
 
   // ====================================================
   // EMERGENCY STATE
   // ====================================================
   if (displayState == EMERGENCY_TAKEN) {
     if (millis() - messageStartTime < EMERGENCY_MESSAGE_TIME) {
-      digitalWrite(BUZZER, HIGH);
+      setBuzzer(true);
       turnOnLED(6);
       if (millis() - lastLCDUpdate >= 500) {
         lastLCDUpdate = millis();
         displayEmergencyTaken();
       }
     } else {
-      digitalWrite(BUZZER, LOW);
+      setBuzzer(false);
       turnOffAllLEDs();
       displayState = MAIN_SCREEN;
       emergencyTriggered = false;
       lcd.clear();
     }
+    serviceBuzzer();
     return;
   }
 
@@ -1062,28 +1319,26 @@ void loop() {
   // ====================================================
   if (activeReminder == -1 && displayState == MAIN_SCREEN) {
     for (int i = 0; i < 6; i++) {
-      if (!doseEnabled[i]) continue;
+      if (!isDoseDue(i, now, NULL)) continue;
 
-      if (now.hour() == doseHour[i] &&
-          now.minute() == doseMinute[i] &&
-          !doseTriggered[i])
-      {
-        activeReminder = i;
-        doseTriggered[i] = true;
-        displayState = MEDICINE_REMINDER;
-        medicineTakenCount = 0;
+      activeReminder = i;
+      doseTriggered[i] = true;
+      displayState = MEDICINE_REMINDER;
+      takenReadingCount = 0;
+      baySeenOccupied = false;
+      reminderStartTime = millis();
+      lastReminderRepublish = millis();
 
-        turnOnLED(doseSensor[i]);
-        digitalWrite(BUZZER, HIGH);
+      turnOnLED(doseSensor[i]);
+      setBuzzer(true);
 
-        publishEvent("reminder_started", doseSensor[i] + 1);
+      publishEvent("reminder_started", doseSensor[i] + 1);
 
-        lcd.clear();
-        Serial.print("REMINDER -> SENSOR ");
-        Serial.print(doseSensor[i] + 1);
-        Serial.println(" TAKE MEDICINE");
-        break;
-      }
+      lcd.clear();
+      Serial.print("REMINDER -> SENSOR ");
+      Serial.print(doseSensor[i] + 1);
+      Serial.println(" TAKE MEDICINE");
+      break;
     }
   }
 
@@ -1093,32 +1348,50 @@ void loop() {
   if (displayState == MEDICINE_REMINDER) {
     int sensorNumber = doseSensor[activeReminder];
     int activeDistance = getSensorDistance(sensorNumber);
+    unsigned long elapsed = millis() - reminderStartTime;
 
-    if (activeDistance > MEDICINE_THRESHOLD) {
-      medicineTakenCount++;
+    // Re-publish so a phone that missed (or was killed during) the first
+    // event rings again instead of staying silent for the whole dose.
+    if (millis() - lastReminderRepublish >= REMINDER_REPUBLISH_MS &&
+        elapsed < REMINDER_REPUBLISH_UNTIL_MS) {
+      lastReminderRepublish = millis();
+      publishEvent("reminder_started", sensorNumber + 1);
+    }
 
-      Serial.print("Taken confirmation: ");
-      Serial.print(medicineTakenCount);
-      Serial.print("/");
-      Serial.println(REQUIRED_TAKEN_READINGS);
+    // A pickup must be a real, consecutive, plausible pickup. Counting
+    // raw samples is what let the box declare "MEDICINE TAKEN" on its own
+    // and switch the buzzer off while the dose was still in the bay.
+    bool readingOk = isSensorOk(sensorNumber) && isValidDistance(activeDistance);
+    bool doseRemoved = readingOk && activeDistance > MEDICINE_THRESHOLD;
 
-      if (medicineTakenCount >= REQUIRED_TAKEN_READINGS) {
-        digitalWrite(BUZZER, LOW);
-        turnOnLED(sensorNumber);
-        displayState = MEDICINE_TAKEN;
-        messageStartTime = millis();
-        medicineTakenCount = 0;
+    if (readingOk && !doseRemoved) baySeenOccupied = true;
 
-        publishEvent("taken", sensorNumber + 1);
+    if (doseRemoved) takenReadingCount++;
+    else takenReadingCount = 0; // must be consecutive
 
-        lcd.clear();
-        Serial.print("SENSOR ");
-        Serial.print(sensorNumber + 1);
-        Serial.println(" -> MEDICINE TAKEN");
-      }
+    bool timeElapsed = elapsed >= TAKEN_MIN_ELAPSED;
+    // The bay has to have been seen holding a dose first, otherwise an
+    // already-empty bay would clear itself the moment the alarm started.
+    // The grace period covers a dose taken before the sensor noticed.
+    bool sawPickup = baySeenOccupied || elapsed >= TAKEN_EMPTY_BAY_GRACE;
+
+    if (readingOk && timeElapsed && sawPickup &&
+        takenReadingCount >= REQUIRED_TAKEN_READINGS) {
+      setBuzzer(false);
+      turnOnLED(sensorNumber);
+      displayState = MEDICINE_TAKEN;
+      messageStartTime = millis();
+      takenReadingCount = 0;
+
+      publishEvent("taken", sensorNumber + 1);
+
+      lcd.clear();
+      Serial.print("SENSOR ");
+      Serial.print(sensorNumber + 1);
+      Serial.println(" -> MEDICINE TAKEN");
     } else {
-      medicineTakenCount = 0;
-      digitalWrite(BUZZER, HIGH);
+      // Everything that is not a confirmed pickup keeps ringing.
+      setBuzzer(true);
       turnOnLED(sensorNumber);
 
       if (millis() - lastLCDUpdate >= 500) {
@@ -1126,6 +1399,7 @@ void loop() {
         displayMedicineReminder();
       }
     }
+    serviceBuzzer();
     return;
   }
 
@@ -1133,7 +1407,7 @@ void loop() {
   // MEDICINE TAKEN STATE
   // ====================================================
   if (displayState == MEDICINE_TAKEN) {
-    digitalWrite(BUZZER, LOW);
+    setBuzzer(false);
     turnOnLED(doseSensor[activeReminder]);
 
     if (millis() - messageStartTime < MEDICINE_MESSAGE_TIME) {
@@ -1155,7 +1429,7 @@ void loop() {
   // MAIN SCREEN
   // ====================================================
   if (displayState == MAIN_SCREEN) {
-    digitalWrite(BUZZER, LOW);
+    setBuzzer(false);
     turnOffAllLEDs();
 
     if (millis() - lastLCDUpdate >= 500) {
