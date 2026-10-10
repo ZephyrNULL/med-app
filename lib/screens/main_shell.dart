@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
+import '../services/app_state.dart';
+import '../widgets/active_alarm_banner.dart';
 import 'home_screen.dart';
 import 'medicine_screen.dart';
 import 'alert_screen.dart';
@@ -25,8 +28,22 @@ class _MainShellState extends State<MainShell> {
 
   @override
   Widget build(BuildContext context) {
+    final appState = context.watch<AppState>();
+    final repo = appState.repo;
+
     return Scaffold(
-      body: IndexedStack(index: _index, children: _screens),
+      body: Column(
+        children: [
+          // A ringing alarm is shown on every tab so it cannot be missed
+          // by staying on Home/Medicine/Profile. Identical for both roles;
+          // only the caregiver gets the "Stop Alarm" button.
+          if (repo.hasActiveAlarm)
+            ActiveAlarmBanner(isCaregiver: appState.isCaregiver),
+          Expanded(
+            child: IndexedStack(index: _index, children: _screens),
+          ),
+        ],
+      ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
         onDestinationSelected: (i) => setState(() => _index = i),
