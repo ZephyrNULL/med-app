@@ -14,30 +14,39 @@ class _SplashScreenState extends State<SplashScreen> {
   @override
   void initState() {
     super.initState();
-    _bootstrap();
+    // Navigating must not happen during the first build. When there was no
+    // saved session the old code called pushReplacementNamed synchronously
+    // from initState, which tripped the "setState() called during build"
+    // guard and the navigator lock, leaving the app on a black launch
+    // screen instead of the login page. Defer until after the frame.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _bootstrap());
   }
 
   Future<void> _bootstrap() async {
     final appState = context.read<AppState>();
-    final session = SupabaseService.currentUser;
-    if (session != null) {
-      // Load the user's profile for role; rebuild the row if it is missing
-      // (e.g. after a DB reset) so the app doesn't get stuck.
-      final profile = await SupabaseService.recoverProfileFromAuth();
-      appState.setProfile(profile);
-      final role = profile?.role;
-      if (role == 'caregiver') {
-        await appState.repo.loadForCaregiver(session.id);
-      } else {
-        await appState.repo.loadForPatient(session.id);
+    var route = '/login';
+    try {
+      final session = SupabaseService.currentUser;
+      if (session != null) {
+        // Load the user's profile for role; rebuild the row if it is
+        // missing (e.g. after a DB reset) so the app doesn't get stuck.
+        final profile = await SupabaseService.recoverProfileFromAuth();
+        appState.setProfile(profile);
+        final role = profile?.role;
+        if (role == 'caregiver') {
+          await appState.repo.loadForCaregiver(session.id);
+        } else {
+          await appState.repo.loadForPatient(session.id);
+        }
+        route = '/home';
       }
-
-      if (!mounted) return;
-      Navigator.pushReplacementNamed(context, '/home');
-    } else {
-      if (!mounted) return;
-      Navigator.pushReplacementNamed(context, '/login');
+    } catch (e) {
+      debugPrint('Splash bootstrap failed: $e');
+      route = '/login';
     }
+
+    if (!mounted) return;
+    Navigator.pushReplacementNamed(context, route);
   }
 
   @override
