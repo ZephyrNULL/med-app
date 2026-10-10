@@ -191,6 +191,69 @@ create policy "boxes insert" on public.boxes
 create policy "boxes update owner" on public.boxes
   for update using (auth.uid() = patient_id) with check (auth.uid() = patient_id);
 
+-- ---------- boxes: pair_box pairing RPC ----------
+-- boxes.device_id is UNIQUE and only its owner may update a row, so a
+-- device left over under a DIFFERENT patient (earlier account / re-pair
+-- after a DB reset) would make the app's INSERT fail with a duplicate-key
+-- error and be impossible to release from the app (RLS). This SECURITY
+-- DEFINER function runs as the table owner and makes "whoever pairs the
+-- device last owns it": re-points the caller's own box, adopts a stale
+-- box row for the device, or creates a fresh one. Keep in sync with
+-- supabase/migrations/<date>_pair_box_rpc.sql.
+create or replace function public.pair_box(p_device_id text)
+returns public.boxes
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  me uuid := auth.uid();
+  v_box public.boxes%rowtype;
+begin
+  if me is null then
+    raise exception 'Authentication required' using errcode = '28000';
+  end if;
+
+  -- 1) Caller already owns a box: keep it, point it at the requested
+  --    device. If some other box holds the device, that box is released
+  --    (its schedules/readings cascade away) so the device id is free.
+  select * into v_box from public.boxes where patient_id = me limit 1;
+  if found then
+    if v_box.device_id = p_device_id then
+      return v_box;
+    end if;
+    delete from public.boxes where device_id = p_device_id and id <> v_box.id;
+    update public.boxes
+       set device_id = p_device_id,
+           paired_at = now()
+     where id = v_box.id
+     returning * into v_box;
+    return v_box;
+  end if;
+
+  -- 2) Device already exists under a different (stale) owner: adopt it
+  --    by re-pointing patient_id to the current user.
+  select * into v_box from public.boxes where device_id = p_device_id limit 1;
+  if found then
+    update public.boxes
+       set patient_id = me,
+           paired_at = now()
+     where id = v_box.id
+     returning * into v_box;
+    return v_box;
+  end if;
+
+  -- 3) Brand-new pairing.
+  insert into public.boxes (patient_id, device_id)
+  values (me, p_device_id)
+  returning * into v_box;
+  return v_box;
+end;
+$$;
+
+revoke execute on function public.pair_box(text) from public;
+grant execute on function public.pair_box(text) to anon, authenticated;
+
 -- ---------- schedules ----------
 -- Patient (owner of box) and caregivers can read; only patient can write
 -- unless you decide caregivers can manage schedules (see spec Â§5.4 / Â§8.3).
@@ -254,4 +317,97 @@ create policy "box_readings write" on public.box_readings
         and (b.patient_id = auth.uid() or public.is_caregiver(b.patient_id))
     )
   );
+
+
+
+-- ============================================================
+-- link_caregiver_to_device(p_device_id) â€” let a caregiver connect
+-- to a patient's box by typing its device id.
+--
+-- Why: boxes are PATIENT-owned (patient_id = the user who paired it),
+-- and a caregiver shares the same box through an ACTIVE row in
+-- patient_caregiver_links. The plain RLS tables give a caregiver NO way
+-- to claim or discover a box before they are linked to its patient, so
+-- there was no "Pair box" button on the caregiver side.
+--
+-- This function (SECURITY DEFINER, bypasses RLS) does:
+--   1. SELF-HEALS the caller's profile: if the caller has no profile row
+--      (account created before the signup trigger existed) or it is
+--      mislabeled as 'patient', upsert it as 'caregiver'. Performing the
+--      caregiver-connect action IS the role declaration, and this keeps
+--      the app's role-dependent UI consistent after the next reload.
+--   2. Finds the patient who owns the box with that device id.
+--   3. Upserts an ACTIVE patient-caretaker link (caregiver -> patient),
+--      so the caregiver's app loads the same box (loadForCaregiver).
+--
+-- Errors (clear messages):
+--   - "Authentication required"                       if not signed in
+--   - "No patient owns a box with device id X yet..." if unknown device
+--
+-- Run this in the Supabase SQL Editor (idempotent, create or replace).
+-- NOTE: this replaces the previous version that rejected callers whose
+-- profile role was not strictly 'caregiver' (a common case for accounts
+-- created before the auto-profile trigger was added).
+-- ============================================================
+
+-- Previous versions returned 	ext; change of return type needs a DROP first.
+drop function if exists public.link_caregiver_to_device(text);
+
+create or replace function public.link_caregiver_to_device(p_device_id text)
+returns public.boxes -- the box the caller is now linked to
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  me uuid := auth.uid();
+  v_profile public.profiles%rowtype;
+  v_user auth.users%rowtype;
+  v_box public.boxes%rowtype;
+begin
+  if me is null then
+    raise exception 'Authentication required' using errcode = '28000';
+  end if;
+
+  -- Self-heal profile: a caller performing the caregiver-connect action
+  -- IS a caregiver. Fix missing/mislabeled rows so role-dependent UI
+  -- (isCaregiver) stays correct after reload.
+  select * into v_profile from public.profiles where id = me;
+  if not found or v_profile.role <> 'caregiver' then
+    select * into v_user from auth.users where id = me;
+    if not found then
+      raise exception 'Account not found' using errcode = 'P0001';
+    end if;
+    insert into public.profiles (id, role, full_name, email)
+    values (
+      me,
+      'caregiver',
+      coalesce(nullif(v_user.raw_user_meta_data ->> 'full_name', ''), v_user.email),
+      v_user.email
+    )
+    on conflict (id) do update set role = 'caregiver';
+  end if;
+
+  -- The patient must have paired the box from their own account first.
+  select * into v_box from public.boxes where device_id = p_device_id limit 1;
+  if not found then
+    raise exception 'No patient owns a box with device id "%" yet. Pair it from the patient''s account first.', p_device_id
+      using errcode = 'P0001';
+  end if;
+
+  -- Upsert an active link; caregiver = me, patient = box owner.
+  insert into public.patient_caregiver_links (patient_id, caregiver_id, status)
+  values (v_box.patient_id, me, 'active')
+  on conflict (patient_id, caregiver_id)
+  do update set status = 'active';
+
+  return v_box;
+end;
+$$;
+
+-- Only signed-in users may link; never anon/browser.
+revoke execute on function public.link_caregiver_to_device(text) from public;
+grant execute on function public.link_caregiver_to_device(text) to authenticated;
+
+
 
