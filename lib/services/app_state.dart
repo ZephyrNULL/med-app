@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../models/user_profile.dart';
@@ -7,12 +9,13 @@ import '../services/supabase_service.dart';
 /// Holds the signed-in user's role + profile and the active repo.
 /// Provided at the top of the widget tree so screens can read role without
 /// prop-drilling.
-class AppState extends ChangeNotifier {
+class AppState extends ChangeNotifier with WidgetsBindingObserver {
   UserProfile? profile;
   String? role; // 'patient' | 'caregiver'
   final CareCubeRepository repo = CareCubeRepository();
 
   AppState() {
+    WidgetsBinding.instance.addObserver(this);
     // Schedules/readings/events are owned by the repo (a separate
     // ChangeNotifier). Forward its notifications so every screen that
     // watches AppState also rebuilds when the repo changes.
@@ -21,8 +24,19 @@ class AppState extends ChangeNotifier {
 
   void _syncRepo() => notifyListeners();
 
+  /// Timers are throttled while the app is backgrounded, so a dose that came
+  /// due in the background is picked up - and a ringing alarm restored -
+  /// the moment the app comes back.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(repo.onAppResumed());
+    }
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     repo.removeListener(_syncRepo);
     repo.dispose();
     super.dispose();
