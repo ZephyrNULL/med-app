@@ -71,7 +71,9 @@ class MedicineScreen extends StatelessWidget {
                     ),
                   const SizedBox(height: 8),
                   Text(
-                    'Escalation: Day 7 is reserved for emergency doses and cannot be scheduled.',
+                    'The box stores 2 days (morning, afternoon and night). '
+                    'Bay 7 is reserved '
+                    'for emergency doses and cannot be scheduled.',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: scheme.onSurfaceVariant),
                     textAlign: TextAlign.center,
@@ -145,7 +147,7 @@ class _EmptyState extends StatelessWidget {
                     ?.copyWith(fontWeight: FontWeight.w700)),
             const SizedBox(height: 8),
             Text(
-              'Add your first medicine dose so the Care Cube knows when to remind you. You can set up to 6 doses across 6 compartments.\n\nEach schedule appears on the LCD display and triggers the reminder LED, buzzer and an alert in this app.',
+              'Add your first medicine dose so the Care Cube knows when to remind you. The box stores 2 days across 6 compartments (Day 1M / 1A / 1N, Day 2M / 2A / 2N).\n\nEach schedule appears on the LCD display and triggers the reminder LED, buzzer and an alert in this app.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant, height: 1.4),
@@ -195,7 +197,8 @@ class _SummaryCard extends StatelessWidget {
                         ?.copyWith(fontWeight: FontWeight.w700)),
                 const SizedBox(height: 4),
                 Text(
-                  '$totalDoses scheduled • $enabledDoses active • 6 day maximum',
+                  '$totalDoses scheduled • $enabledDoses active • '
+                  '2 days (morning · afternoon · night)',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: scheme.onSurfaceVariant),
                 ),
@@ -346,7 +349,7 @@ class _ScheduleEditorState extends State<ScheduleEditor> {
               ),
             ),
             const SizedBox(height: 20),
-            Text('Compartments / day',
+            Text('Compartment (day · morning/afternoon/night)',
                 style: theme.textTheme.titleMedium
                     ?.copyWith(fontWeight: FontWeight.w700)),
             const SizedBox(height: 10),
@@ -365,7 +368,7 @@ class _ScheduleEditorState extends State<ScheduleEditor> {
                           ? Colors.orange.shade800
                           : scheme.onSurfaceVariant,
                     ),
-                    label: Text('Day $bay'),
+                    label: Text(MedicineSchedule.labelForBay(bay)),
                     selected: _sensor == bay,
                     onSelected: (_) => setState(() => _sensor = bay),
                   ),
@@ -457,7 +460,7 @@ class _ScheduleTile extends StatelessWidget {
               ),
               alignment: Alignment.center,
               child: Text(
-                'Day ${schedule.sensorNumber}',
+                schedule.bayLabel,
                 style: TextStyle(
                   color: color,
                   fontWeight: FontWeight.bold,
@@ -478,7 +481,7 @@ class _ScheduleTile extends StatelessWidget {
                       Text(
                         schedule.label.isNotEmpty
                             ? schedule.label
-                            : 'Day ${schedule.sensorNumber}',
+                            : schedule.bayLabel,
                         style: theme.textTheme.titleMedium
                             ?.copyWith(fontWeight: FontWeight.w600),
                       ),
@@ -492,11 +495,11 @@ class _ScheduleTile extends StatelessWidget {
                           Text(schedule.timeLabel,
                               style: theme.textTheme.bodySmall),
                           const SizedBox(width: 10),
-                          Icon(Icons.timer_outlined,
+                          Icon(Icons.inventory_2_outlined,
                               size: 14,
                               color: theme.colorScheme.onSurfaceVariant),
                           const SizedBox(width: 4),
-                          Text('Slot ${schedule.slot + 1}',
+                          Text(schedule.bayLabel,
                               style: theme.textTheme.bodySmall),
                         ],
                       ),
