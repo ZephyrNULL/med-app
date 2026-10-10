@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../models/dose_event.dart';
+import '../models/medicine_schedule.dart';
 import '../services/app_state.dart';
 import '../services/supabase_service.dart';
 import '../widgets/common.dart';
@@ -15,7 +16,6 @@ class AlertScreen extends StatelessWidget {
     final appState = context.watch<AppState>();
     final repo = appState.repo;
     final events = repo.events;
-    final hasActiveAlarm = repo.hasActiveAlarm;
 
     return Scaffold(
       appBar: AppBar(
@@ -35,8 +35,6 @@ class AlertScreen extends StatelessWidget {
       ),
       body: Column(
         children: [
-          if (hasActiveAlarm)
-            _ActiveAlarmBanner(isCaregiver: appState.isCaregiver),
           Expanded(
             child: events.isEmpty
                 ? const _EmptyAlerts()
@@ -48,6 +46,9 @@ class AlertScreen extends StatelessWidget {
   }
 
   /// Connect the app to a box by typing its device id.
+  ///
+  /// Patients pair the box into their own account; caregivers are linked by
+  /// the server to the patient who already owns the box.
   Future<void> _connectBox(BuildContext context) async {
     final appState = context.read<AppState>();
     final deviceIdText = await showPairBoxDialog(context);
@@ -56,6 +57,20 @@ class AlertScreen extends StatelessWidget {
 
     final user = SupabaseService.currentUser;
     if (user == null) return;
+    if (appState.isCaregiver) {
+      try {
+        final box = await SupabaseService.linkCaregiverToDevice(deviceIdText);
+        await appState.repo.loadForPatient(box['patient_id'] as String);
+        if (context.mounted) {
+          showAppToast(context, 'Connected to box $deviceIdText');
+        }
+      } catch (e) {
+        if (context.mounted) {
+          showAppToast(context, 'Connection failed: $e', destructive: true);
+        }
+      }
+      return;
+    }
     try {
       await SupabaseService.pairBox(
         patientId: user.id,
@@ -79,8 +94,9 @@ class AlertScreen extends StatelessWidget {
       builder: (dialogContext) => AlertDialog(
         title: const Text('Clear all alerts?'),
         content: const Text(
-          'Stops any ringing alarm and clears this feed on your device. '
-          'History stays safe in the cloud.',
+          'Clears this feed on your device. History stays safe in the cloud. '
+          'A ringing alarm keeps ringing — take the dose or ask your '
+          'caregiver to stop it.',
         ),
         actions: [
           TextButton(
@@ -123,7 +139,7 @@ class _EmptyAlerts extends StatelessWidget {
                     ?.copyWith(fontWeight: FontWeight.w700)),
             const SizedBox(height: 8),
             Text(
-              'Events from your box will appear here.\nThis includes reminders started, doses taken, missed doses and emergency doses taken from Day 7.',
+              'Events from your box will appear here.\nThis includes reminders started, doses taken, missed doses and emergency doses taken from the emergency bay (Day 7).',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant, height: 1.4),
@@ -342,90 +358,6 @@ class _StatTile extends StatelessWidget {
 
 /// Banner shown when a reminder/emergency alarm is unacknowledged.
 /// Caregiver gets a "Stop Alarm" button; patient does not.
-class _ActiveAlarmBanner extends StatefulWidget {
-  final bool isCaregiver;
-  const _ActiveAlarmBanner({required this.isCaregiver});
-
-  @override
-  State<_ActiveAlarmBanner> createState() => _ActiveAlarmBannerState();
-}
-
-class _ActiveAlarmBannerState extends State<_ActiveAlarmBanner> {
-  bool _stopping = false;
-
-  Future<void> _stop() async {
-    setState(() => _stopping = true);
-    context.read<AppState>().repo.caregiverStopAlarm();
-    await Future.delayed(const Duration(milliseconds: 400));
-    if (!mounted) return;
-    setState(() => _stopping = false);
-    showAppToast(context, 'Alarm stop sent to box');
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final color = Theme.of(context).colorScheme.error;
-    return Container(
-      width: double.infinity,
-      color: color,
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.notifications_active,
-                  color: Colors.white, size: 22),
-              const SizedBox(width: 8),
-              const Text(
-                'MEDICINE ALARM ACTIVE',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 1.2,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'The patient alarm is ringing. Take the dose to stop it.',
-            style: TextStyle(color: Colors.white.withValues(alpha: 0.95)),
-          ),
-          if (widget.isCaregiver) ...[
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
-              onPressed: _stopping ? null : _stop,
-              style: OutlinedButton.styleFrom(
-                foregroundColor: Colors.white,
-                side: const BorderSide(color: Colors.white),
-                backgroundColor: Colors.black.withValues(alpha: 0.15),
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              ),
-              icon: _stopping
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white),
-                    )
-                  : const Icon(Icons.stop_circle_outlined, size: 18),
-              label: const Text('Stop Alarm'),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Caregiver only — silences the buzzer but does not mark the dose as taken.',
-              style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.9), fontSize: 11),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
 class _EventTile extends StatelessWidget {
   final DoseEvent event;
   const _EventTile({required this.event});
@@ -481,7 +413,7 @@ class _EventTile extends StatelessWidget {
                 ?.copyWith(fontWeight: FontWeight.w600),
           ),
           subtitle: Text(
-              'Sensor ${event.sensorNumber} • ${DateFormat('MMM d, HH:mm').format(event.occurredAt)}'),
+              '${MedicineSchedule.labelForBay(event.sensorNumber)} • ${DateFormat('MMM d, HH:mm').format(event.occurredAt)}'),
           trailing: Container(
             width: 8,
             height: 8,
