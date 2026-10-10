@@ -240,6 +240,10 @@ class ProfileScreen extends StatelessWidget {
   Widget _divider() => const Divider(height: 1, indent: 56);
 
   /// Connect the app to an ESP32 box by typing its device id.
+  ///
+  /// Patients pair the box into their own account; caregivers instead ask
+  /// the server to link them to the patient who already paired that device id
+  /// (boxes are patient-owned, both roles then load the same box).
   static Future<void> _connectBox(BuildContext context) async {
     final appState = context.read<AppState>();
     final deviceIdText = await showPairBoxDialog(context);
@@ -248,6 +252,20 @@ class ProfileScreen extends StatelessWidget {
 
     final user = SupabaseService.currentUser;
     if (user == null) return;
+    if (appState.isCaregiver) {
+      try {
+        final box = await SupabaseService.linkCaregiverToDevice(deviceIdText);
+        await appState.repo.loadForPatient(box['patient_id'] as String);
+        if (context.mounted) {
+          showAppToast(context, 'Connected to box $deviceIdText');
+        }
+      } catch (e) {
+        if (context.mounted) {
+          showAppToast(context, 'Connection failed: $e', destructive: true);
+        }
+      }
+      return;
+    }
     try {
       await SupabaseService.pairBox(
         patientId: user.id,
@@ -291,9 +309,11 @@ class _ConnectBoxCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final repo = context.watch<AppState>().repo;
+    final appState = context.watch<AppState>();
+    final repo = appState.repo;
     final connected = repo.mqttConnected;
     final deviceId = repo.deviceId;
+    final caregiver = appState.isCaregiver;
 
     return Card(
       clipBehavior: Clip.antiAlias,
@@ -311,7 +331,11 @@ class _ConnectBoxCard extends StatelessWidget {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    connected ? 'Box connected' : 'Connect to your box',
+                    connected
+                        ? 'Box connected'
+                        : (caregiver
+                            ? 'Connect to your patient\u2019s box'
+                            : 'Connect to your box'),
                     style: theme.textTheme.titleSmall
                         ?.copyWith(fontWeight: FontWeight.w700),
                   ),
@@ -320,12 +344,19 @@ class _ConnectBoxCard extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              'Your phone talks to the ESP32 medicine box over MQTT to '
-              'receive live temperature, humidity and dose alerts. '
-              'Type the device id printed on the sticker on the bottom of '
-              'the box to pair it with this account. Once connected, live '
-              'readings appear on the Home tab and reminders ring '
-              'automatically at dose time.',
+              caregiver
+                  ? 'This links you to the patient who owns the box '
+                      'with this device id, so you see their live '
+                      'readings, dose alerts and can stop their alarm. '
+                      'Type the device id printed on the sticker on the '
+                      'bottom of the box to connect.'
+                  : 'Your phone talks to the ESP32 medicine box over MQTT '
+                      'to receive live temperature, humidity and dose '
+                      'alerts. Type the device id printed on the sticker '
+                      'on the bottom of the box to pair it with this '
+                      'account. Once connected, live readings appear on '
+                      'the Home tab and reminders ring automatically at '
+                      'dose time.',
               style: theme.textTheme.bodySmall?.copyWith(
                   color: scheme.onSurfaceVariant, height: 1.4),
             ),
@@ -334,7 +365,12 @@ class _ConnectBoxCard extends StatelessWidget {
               onPressed: () => ProfileScreen._connectBox(context),
               icon: const Icon(Icons.link),
               label: Text(
-                  connected ? 'Pair a different box' : 'Connect to ESP32 box'),
+                connected
+                    ? 'Pair/connect a different box'
+                    : (caregiver
+                        ? 'Connect to patient\u2019s box'
+                        : 'Connect to ESP32 box'),
+              ),
             ),
             if (deviceId != null) ...[
               const SizedBox(height: 8),
@@ -505,8 +541,7 @@ class _AlarmSettingsCard extends StatelessWidget {
         actions: [
           TextButton(
             onPressed: () async {
-              await sys.stopLoop();
-              await alarms.stopAlarm();
+              await alarms.stopPreview();
               if (dialogContext.mounted) Navigator.pop(dialogContext);
             },
             child: const Text('Done'),
