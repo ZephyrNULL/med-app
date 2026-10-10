@@ -1,6 +1,7 @@
 package com.carecube.care_cube
 
 import android.content.ContentUris
+import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.media.RingtoneManager
 import android.net.Uri
@@ -15,6 +16,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private var loopPlayer: MediaPlayer? = null
+    private var previewPlayer: MediaPlayer? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -26,11 +28,13 @@ class MainActivity : FlutterActivity() {
                         RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)?.toString()
                     )
                     "play" -> {
-                        playOnce(Uri.parse(call.argument<String>("uri")));
-                        result.success(true)
+                        result.success(playOnce(Uri.parse(call.argument<String>("uri"))));
                     }
                     "playLoop" -> {
-                        playLoop(Uri.parse(call.argument<String>("uri")))
+                        result.success(playLoop(Uri.parse(call.argument<String>("uri"))))
+                    }
+                    "stopPreview" -> {
+                        stopPreview()
                         result.success(true)
                     }
                     "stop" -> {
@@ -86,19 +90,58 @@ class MainActivity : FlutterActivity() {
         return tones
     }
 
-    private fun playOnce(uri: Uri) {
-        stopPlayback()
-        val player = MediaPlayer.create(this, uri) ?: return
-        player.setOnCompletionListener { it.release() }
-        player.start()
+    private fun audioAttrs(): AudioAttributes =
+        AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_ALARM)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+
+    private fun playOnce(uri: Uri): Boolean {
+        stopPreview()
+        return try {
+            val player = MediaPlayer()
+            player.setAudioAttributes(audioAttrs())
+            player.setDataSource(this, uri)
+            player.setOnCompletionListener { finished ->
+                finished.release()
+                if (previewPlayer === finished) previewPlayer = null
+            }
+            player.prepare()
+            player.start()
+            previewPlayer = player
+            true
+        } catch (e: Exception) {
+            // Deleted file, denied URI, unreadable stream: report failure so
+            // the Dart side can fall back to a bundled tone.
+            false
+        }
     }
 
-    private fun playLoop(uri: Uri) {
+    private fun playLoop(uri: Uri): Boolean {
         stopPlayback()
-        val player = MediaPlayer.create(this, uri) ?: return
-        player.isLooping = true
-        player.start()
-        loopPlayer = player
+        return try {
+            val player = MediaPlayer()
+            player.setAudioAttributes(audioAttrs())
+            player.setDataSource(this, uri)
+            player.isLooping = true
+            player.prepare()
+            player.start()
+            loopPlayer = player
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun stopPreview() {
+        previewPlayer?.let {
+            try {
+                it.stop()
+            } catch (_: Exception) {
+            }
+            it.release()
+        }
+        previewPlayer = null
     }
 
     private fun stopPlayback() {
