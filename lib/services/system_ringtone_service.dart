@@ -62,6 +62,17 @@ class SystemRingtoneService {
     }
   }
 
+  /// Stop a one-shot preview without touching the looping alarm player.
+  Future<bool> stopPreview() async {
+    if (!supported) return false;
+    try {
+      return await _channel.invokeMethod<bool>('stopPreview') ?? false;
+    } on PlatformException catch (e) {
+      debugPrint('SystemRingtoneService.stopPreview failed: ${e.message}');
+      return false;
+    }
+  }
+
   /// Loop a tone until [stopLoop] is called (alarm playback).
   Future<bool> playLoopUri(String uri) async {
     if (!supported) return false;
