@@ -76,12 +76,22 @@ class CareCubeRepository extends ChangeNotifier {
   /// reusing it would relabel a stale temperature as "just now".
   DateTime? _lastReadingAt;
 
+  /// When the box last made live contact over MQTT (a status OR an event).
+  /// Only live messages update this, so a value restored from Supabase after
+  /// a restart never makes a powered-off box look online.
+  DateTime? _lastBoxContactAt;
+
+  /// Tracks the previous [boxOnline] value so the freshness timer can react
+  /// to the box dropping off the network.
+  bool _wasOnline = false;
+
   /// How long ago the box last reported its environment, or null if it never
-  /// has. A reading older than [_staleAfter] is shown as stale rather than
-  /// presented as if it were live.
+  /// has since this session started. A reading older than [_staleAfter] is
+  /// shown as stale rather than presented as if it were live.
   Duration? get readingAge {
-    if (_latestReading == null) return null;
-    return DateTime.now().difference(_lastReadingAt ?? DateTime.now());
+    final at = _lastReadingAt;
+    if (_latestReading == null || at == null) return null;
+    return DateTime.now().difference(at);
   }
 
   static const _staleAfter = Duration(seconds: 20);
@@ -91,6 +101,15 @@ class CareCubeRepository extends ChangeNotifier {
     return age == null || age > _staleAfter;
   }
 
+  /// True only while the box is actually reporting live. Readings, events
+  /// and schedules restored from Supabase on startup are persisted history,
+  /// not a live feed, so a box that is powered off must not present itself
+  /// as online.
+  bool get boxOnline {
+    final at = _lastBoxContactAt;
+    return at != null && DateTime.now().difference(at) <= _staleAfter;
+  }
+
   /// True if the most recent event is an unacknowledged reminder or
   /// emergency — mirrors the ESP32's MEDICINE_REMINDER / EMERGENCY_TAKEN
   /// states. A `taken` or `caregiver_stopped` event ends it.
@@ -98,6 +117,21 @@ class CareCubeRepository extends ChangeNotifier {
     if (_events.isEmpty) return false;
     return _events.first.isActiveAlarm;
   }
+
+  /// UI-facing alarm state: a reminder only counts as active while the box
+  /// that fired it is live. An unresolved event restored from the DB must
+  /// not keep a phantom banner (or ring) alive after the box is gone.
+  bool get showActiveAlarm => boxOnline && hasActiveAlarm;
+
+  /// The event currently ringing (head of the feed while it is unresolved).
+  DoseEvent? get activeAlarmEvent =>
+      (_events.isNotEmpty && _events.first.isActiveAlarm)
+          ? _events.first
+          : null;
+
+  /// True while the ringing alarm is an emergency (bay 7 taken). Drives the
+  /// red "Emergency Taken" banner.
+  bool get isEmergencyAlarm => activeAlarmEvent?.type == 'emergency_taken';
 
   Future<void> loadForPatient(String patientId) async {
     // Find the patient's box.
@@ -176,7 +210,17 @@ class CareCubeRepository extends ChangeNotifier {
 
     _freshnessTimer?.cancel();
     _freshnessTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-      if (_latestReading != null) notifyListeners();
+      final online = boxOnline;
+      if (_wasOnline && !online) {
+        // The box stopped reporting while an alarm looked active. That is
+        // stored history, not a live alert, so silence it and drop the
+        // banner until the box reports again.
+        debugPrint('[repo] box offline - clearing live alarm state');
+        _activeAlarmBay = null;
+        AlarmSoundService().stopAlarm();
+      }
+      _wasOnline = online;
+      if (_latestReading != null || _events.isNotEmpty) notifyListeners();
     });
   }
 
@@ -191,13 +235,16 @@ class CareCubeRepository extends ChangeNotifier {
       debugPrint('Resume refresh failed: $e');
     }
     _scanSchedules();
-    if (hasActiveAlarm && !AlarmSoundService().isRinging) {
+    if (showActiveAlarm && !AlarmSoundService().isRinging) {
       AlarmSoundService().startAlarm();
     }
   }
 
   void _scanSchedules() {
-    if (_deviceId == null || _schedules.isEmpty) return;
+    // The phone-side scanner is a backup for a live box. When the box is not
+    // reporting there is nothing to remind against locally, so a stale
+    // schedule must not fire a phantom alarm.
+    if (_deviceId == null || _schedules.isEmpty || !boxOnline) return;
 
     final now = DateTime.now();
 
@@ -252,6 +299,7 @@ class CareCubeRepository extends ChangeNotifier {
     _latestReading = reading;
     _lastSynced = DateTime.now();
     _lastReadingAt = _lastSynced;
+    _lastBoxContactAt = _lastSynced;
     notifyListeners();
 
     final boxId = _boxId;
@@ -272,6 +320,9 @@ class CareCubeRepository extends ChangeNotifier {
   }
 
   Future<void> _onEvent(DoseEvent event) async {
+    // A live event is proof the box is on, even before its next status
+    // heartbeat lands.
+    _lastBoxContactAt = DateTime.now();
     _handleLocalEvent(event, persist: true);
   }
 
@@ -495,6 +546,9 @@ class CareCubeRepository extends ChangeNotifier {
     _lastReadingPersistAt = null;
     _localAlarmKeys.clear();
     _activeAlarmBay = null;
+    _lastReadingAt = null;
+    _lastBoxContactAt = null;
+    _wasOnline = false;
     for (final s in _subs) {
       await s.cancel();
     }

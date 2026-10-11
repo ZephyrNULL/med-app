@@ -68,7 +68,7 @@ create table public.dose_events (
   id uuid primary key default gen_random_uuid(),
   box_id uuid not null references public.boxes(id) on delete cascade,
   schedule_id uuid references public.schedules(id), -- null for emergency
-  event_type text not null check (event_type in ('reminder_started','taken','missed','emergency_taken','caregiver_stopped')),
+  event_type text not null check (event_type in ('reminder_started','taken','missed','emergency_taken','emergency_returned','caregiver_stopped')),
   sensor_number int not null check (sensor_number between 1 and 7),
   occurred_at timestamptz default now()
 );
@@ -255,8 +255,9 @@ revoke execute on function public.pair_box(text) from public;
 grant execute on function public.pair_box(text) to anon, authenticated;
 
 -- ---------- schedules ----------
--- Patient (owner of box) and caregivers can read; only patient can write
--- unless you decide caregivers can manage schedules (see spec Â§5.4 / Â§8.3).
+-- Patient (owner of box) and caregivers can read; the owner AND active
+-- caregivers can write (add / edit / delete), matching the app UI which
+-- exposes dose management to caregivers.
 create policy "schedules read" on public.schedules
   for select using (
     exists (
@@ -266,16 +267,18 @@ create policy "schedules read" on public.schedules
     )
   );
 
-create policy "schedules write owner" on public.schedules
+create policy "schedules write owner or caregiver" on public.schedules
   for all using (
     exists (
       select 1 from public.boxes b
-      where b.id = schedules.box_id and b.patient_id = auth.uid()
+      where b.id = schedules.box_id
+        and (b.patient_id = auth.uid() or public.is_caregiver(b.patient_id))
     )
   ) with check (
     exists (
       select 1 from public.boxes b
-      where b.id = schedules.box_id and b.patient_id = auth.uid()
+      where b.id = schedules.box_id
+        and (b.patient_id = auth.uid() or public.is_caregiver(b.patient_id))
     )
   );
 

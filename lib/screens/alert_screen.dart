@@ -227,7 +227,10 @@ class _AlertFeedState extends State<_AlertFeed> {
     final reminders =
         widget.events.where((e) => e.type == 'reminder_started').length;
     final emergency = widget.events
-        .where((e) => e.type == 'emergency_taken' || e.type == 'missed')
+        .where((e) =>
+            e.type == 'emergency_taken' ||
+            e.type == 'emergency_returned' ||
+            e.type == 'missed')
         .length;
 
     return Column(
@@ -310,7 +313,9 @@ class _AlertFeedState extends State<_AlertFeed> {
       case _AlertFilter.emergency:
         return widget.events
             .where((e) =>
-                e.type == 'emergency_taken' || e.type == 'missed')
+                e.type == 'emergency_taken' ||
+                e.type == 'emergency_returned' ||
+                e.type == 'missed')
             .toList();
     }
   }
@@ -367,6 +372,7 @@ class _EventTile extends StatelessWidget {
     final theme = Theme.of(context);
     final isCaregiverStop = event.type == 'caregiver_stopped';
     final isEmergency = event.type == 'emergency_taken';
+    final isEmergencyReturned = event.type == 'emergency_returned';
     final isTaken = event.type == 'taken';
     final isReminder = event.type == 'reminder_started';
     final isMissed = event.type == 'missed';
@@ -376,6 +382,9 @@ class _EventTile extends StatelessWidget {
     if (isEmergency) {
       icon = Icons.emergency_outlined;
       color = Colors.red;
+    } else if (isEmergencyReturned) {
+      icon = Icons.playlist_add_check_circle;
+      color = Colors.redAccent;
     } else if (isMissed) {
       icon = Icons.error_outline;
       color = Colors.redAccent;

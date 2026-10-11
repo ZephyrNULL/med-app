@@ -1,6 +1,7 @@
 /// A dose event published by the ESP32 on `carecube/{device_id}/event`.
 ///
-/// types: reminder_started | taken | missed | emergency_taken | caregiver_stopped
+/// types: reminder_started | taken | missed | emergency_taken |
+///        emergency_returned | caregiver_stopped
 class DoseEvent {
   final String? id;
   final String? boxId;
@@ -59,7 +60,9 @@ class DoseEvent {
       case 'missed':
         return 'Dose missed';
       case 'emergency_taken':
-        return 'Emergency dose taken';
+        return 'Emergency Taken';
+      case 'emergency_returned':
+        return 'Emergency container returned';
       case 'caregiver_stopped':
         return 'Alarm stopped by caregiver';
       default:

@@ -37,6 +37,15 @@ The app publishes/subscribes to exactly the topics the firmware uses:
 | `carecube/{device_id}/event` | ESP32 → App | `{"device_id","type","sensor_number","timestamp"}` |
 | `carecube/{device_id}/alarm/stop` | App → ESP32 | caregiver only; silences buzzer, does NOT mark taken |
 
+- `type` on the event topic is one of `reminder_started`, `taken`,
+  `missed`, `emergency_taken`, `emergency_returned`, `caregiver_stopped`.
+- Emergency (bay 7): when the container is removed, the box publishes
+  `emergency_taken` and the buzzer — plus the phone alarm on the patient and
+  caregiver apps — keeps ringing until the container is placed BACK in the
+  bay. The box then publishes `emergency_returned`, resolving the alarm on
+  every phone. Only that, or a caregiver's `alarm/stop`, silences it (no
+  time-out).
+
 - `device_id` must equal the firmware's `DEVICE_ID` (e.g. `carecube-001`) and
   the `boxes.device_id` row in Supabase.
 - The **schedule sync is idempotent**: every add/edit/delete re-publishes the

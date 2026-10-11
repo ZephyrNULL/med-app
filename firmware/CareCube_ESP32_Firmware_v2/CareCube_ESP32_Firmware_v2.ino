@@ -166,6 +166,10 @@ unsigned long lastReminderRepublish = 0;
 int takenReadingCount = 0;
 bool baySeenOccupied = false;
 
+// Debounce counter for the emergency container being placed back (S7 <=
+// threshold). An emergency alarm is only cleared by that, never by a timer.
+int emergencyReturnReadings = 0;
+
 // ======================================================
 // BUZZER STATE
 // ======================================================
@@ -189,7 +193,6 @@ DisplayState displayState = MAIN_SCREEN;
 // ======================================================
 unsigned long messageStartTime = 0;
 const unsigned long MEDICINE_MESSAGE_TIME = 30000UL;
-const unsigned long EMERGENCY_MESSAGE_TIME = 60000UL;
 
 // ======================================================
 // SENSOR DISTANCES
@@ -221,12 +224,28 @@ unsigned long lastMQTTPublish = 0;
 // Heartbeat only: the environment is published every time a fresh DHT sample
 // lands (every 2s), so the app and the LCD agree. This slower timer just
 // proves the box is alive if the DHT stops producing samples.
-const unsigned long MQTT_HEARTBEAT_INTERVAL = 30000UL;
+//
+// Must stay comfortably BELOW the app's box-online window (20s). At 30s a
+// DHT hiccup left a >20s gap with no status, so the app flipped the whole
+// box to "offline" (hiding readings and silencing the alarm). 15s keeps a
+// live box looking online even when the sensor misbehaves.
+const unsigned long MQTT_HEARTBEAT_INTERVAL = 15000UL;
 
 // A drifting RTC eventually lands a dose in the wrong minute, which reads
 // as a reminder that "never rang". Re-sync every few hours when online.
 unsigned long lastClockSync = 0;
 const unsigned long CLOCK_SYNC_INTERVAL = 6UL * 60UL * 60UL * 1000UL;
+
+// Local UTC offset used when syncing the clock from NTP.
+//
+// The app lets the caregiver enter a dose at, say, 08:00 LOCAL time and the
+// box fires when its own wall clock reaches 08:00. If the RTC runs on UTC
+// the dose fires offset by this many hours, which is exactly the "the box
+// rings at the wrong time" symptom on real hardware (the PC simulator uses
+// the PC's local clock, so the two only agree when this offset is set).
+//
+// Default 5*3600 + 30*60 = UTC+05:30 (Sri Lanka). Change for your region.
+#define TIMEZONE_OFFSET_SEC (5 * 3600 + 30 * 60)
 
 // ======================================================
 // PREVIOUS S7 DISTANCE
@@ -595,8 +614,10 @@ void startSetupPortal() {
   wm.addParameter(&deviceParam);
 
   if (wm.startConfigPortal("CareCube-Setup")) {
+    // WiFiManagerParameter::getValue() already returns a const char*, so it
+    // must not be dereferenced again (older WiFiManager returned a String).
     saveSettingsAndReboot(wm.getWiFiSSID().c_str(), wm.getWiFiPass().c_str(),
-                          deviceParam.getValue().c_str());
+                          deviceParam.getValue());
   } else {
     Serial.println("Setup portal timed out - no config, staying unconfigured");
     lcd.clear();
@@ -814,6 +835,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       activeReminder = -1;
       emergencyTriggered = false;
       takenReadingCount = 0;
+      emergencyReturnReadings = 0;
       baySeenOccupied = false;
       lcd.clear();
     }
@@ -881,7 +903,9 @@ time_t nowUnix() {
 }
 
 void syncRtcFromNtp() {
-  configTime(0, 0, "pool.ntp.org", "time.google.com");
+  // Sync on LOCAL time (see TIMEZONE_OFFSET_SEC) so dose times entered in the
+  // app line up with the box's wall clock.
+  configTime(TIMEZONE_OFFSET_SEC, 0, "pool.ntp.org", "time.google.com");
   struct tm tmv;
   if (getLocalTime(&tmv, 5000)) {
     if (rtcOk) {
@@ -1278,6 +1302,7 @@ void loop() {
       emergencyTriggered = true;
       displayState = EMERGENCY_TAKEN;
       messageStartTime = millis();
+      lastReminderRepublish = millis();
       turnOnLED(6);
       setBuzzer(true);
 
@@ -1295,20 +1320,44 @@ void loop() {
   // ====================================================
   // EMERGENCY STATE
   // ====================================================
+  // An emergency alarm is NOT timer-based: the buzzer (and the phone alarms
+  // it drives via the published event) keeps ringing until the emergency
+  // container is placed BACK in bay 7 (S7 returns to <= MEDICINE_THRESHOLD).
+  // Only that, or a caregiver's alarm/stop, may silence it.
   if (displayState == EMERGENCY_TAKEN) {
-    if (millis() - messageStartTime < EMERGENCY_MESSAGE_TIME) {
-      setBuzzer(true);
-      turnOnLED(6);
-      if (millis() - lastLCDUpdate >= 500) {
-        lastLCDUpdate = millis();
-        displayEmergencyTaken();
+    setBuzzer(true);
+    turnOnLED(6);
+
+    // Re-publish while still ringing so a phone that missed (or was killed
+    // during) the first event rings again - mirrors the reminder path.
+    if (millis() - lastReminderRepublish >= REMINDER_REPUBLISH_MS) {
+      lastReminderRepublish = millis();
+      publishEvent("emergency_taken", 7);
+    }
+
+    // Container back -> resolve. Debounced like a normal pickup so one
+    // flaky sample cannot clear an active emergency.
+    if (isValidDistance(distance7)) {
+      if (distance7 <= MEDICINE_THRESHOLD) {
+        emergencyReturnReadings++;
+        if (emergencyReturnReadings >= REQUIRED_TAKEN_READINGS) {
+          emergencyReturnReadings = 0;
+          setBuzzer(false);
+          turnOffAllLEDs();
+          emergencyTriggered = false;
+          displayState = MAIN_SCREEN;
+          publishEvent("emergency_returned", 7);
+          lcd.clear();
+          Serial.println("Emergency container returned - alarm cleared");
+        }
+      } else {
+        emergencyReturnReadings = 0;
       }
-    } else {
-      setBuzzer(false);
-      turnOffAllLEDs();
-      displayState = MAIN_SCREEN;
-      emergencyTriggered = false;
-      lcd.clear();
+    }
+
+    if (millis() - lastLCDUpdate >= 500) {
+      lastLCDUpdate = millis();
+      displayEmergencyTaken();
     }
     serviceBuzzer();
     return;

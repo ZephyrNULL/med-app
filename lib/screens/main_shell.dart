@@ -36,8 +36,10 @@ class _MainShellState extends State<MainShell> {
         children: [
           // A ringing alarm is shown on every tab so it cannot be missed
           // by staying on Home/Medicine/Profile. Identical for both roles;
-          // only the caregiver gets the "Stop Alarm" button.
-          if (repo.hasActiveAlarm)
+          // only the caregiver gets the "Stop Alarm" button. Gated on the
+          // box actually reporting, so a stale unresolved event restored
+          // from the DB cannot keep a phantom banner alive.
+          if (repo.showActiveAlarm)
             ActiveAlarmBanner(isCaregiver: appState.isCaregiver),
           Expanded(
             child: IndexedStack(index: _index, children: _screens),

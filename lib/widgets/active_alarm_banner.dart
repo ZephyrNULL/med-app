@@ -30,26 +30,38 @@ class _ActiveAlarmBannerState extends State<ActiveAlarmBanner> {
 
   @override
   Widget build(BuildContext context) {
+    final appState = context.watch<AppState>();
+    final isEmergency = appState.repo.isEmergencyAlarm;
     final color = Theme.of(context).colorScheme.error;
+    // Emergency alert: hard red so it reads as a real emergency. The alarm
+    // only clears once the emergency container is placed back in the box.
+    final accentColor = isEmergency ? Colors.red.shade700 : color;
     // Keep the banner clear of the status bar (battery, clock, network
     // icons) and compact vertically so it doesn't push content far down.
     return SafeArea(
       bottom: false,
       child: Container(
         width: double.infinity,
-        color: color,
+        color: accentColor,
         padding: const EdgeInsets.fromLTRB(16, 6, 16, 10),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
-                const Icon(Icons.notifications_active,
-                    color: Colors.white, size: 22),
+                Icon(
+                  isEmergency
+                      ? Icons.emergency_outlined
+                      : Icons.notifications_active,
+                  color: Colors.white,
+                  size: 22,
+                ),
                 const SizedBox(width: 8),
-                const Text(
-                  'MEDICINE ALARM ACTIVE',
-                  style: TextStyle(
+                Text(
+                  isEmergency
+                      ? 'EMERGENCY TAKEN'
+                      : 'MEDICINE ALARM ACTIVE',
+                  style: const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.bold,
                     letterSpacing: 1.2,
@@ -59,7 +71,10 @@ class _ActiveAlarmBannerState extends State<ActiveAlarmBanner> {
             ),
             const SizedBox(height: 2),
             Text(
-              'The patient alarm is ringing. Take the dose to stop it.',
+              isEmergency
+                  ? 'The emergency container was taken. Put it back in the '
+                      'box to stop the alarm.'
+                  : 'The patient alarm is ringing. Take the dose to stop it.',
               style: TextStyle(color: Colors.white.withValues(alpha: 0.95)),
             ),
             if (widget.isCaregiver) ...[

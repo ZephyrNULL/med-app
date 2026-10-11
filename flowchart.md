@@ -431,10 +431,10 @@ flowchart TD
         EMER_READY -->|YES| EMER_ACTIVE["Set emergencyTriggered = true\nturnOnLED(7)\nBUZZER = HIGH\nPublish 'emergency_taken'"]
         EMER_READY -->|NO| SAVE_PREV
         EMER_ACTIVE --> EMER_DISPLAY[>"Display: 'ATTENTION!\nEMERGENCY DOSE\nTAKEN!'"]
-        EMER_DISPLAY --> EMER_LOOP["Timer: buzzer + LED\nfor 60 seconds"]
-        EMER_LOOP --> EMER_DONE{60s elapsed?}
-        EMER_DONE -->|NO| SAVE_PREV
-        EMER_DONE -->|YES| EMER_CLEAR["BUZZER = LOW\nLED OFF\nemergencyTriggered = false\nBack to MAIN_SCREEN"]
+        EMER_DISPLAY --> EMER_LOOP["Loop: buzzer + LED ON\n(no time-out)\nRe-publish 'emergency_taken'"]
+        EMER_LOOP --> EMER_CHECK{"S7 back to\n<= 90mm (3 reads)?"}
+        EMER_CHECK -->|NO| EMER_LOOP
+        EMER_CHECK -->|YES| EMER_CLEAR["BUZZER = LOW\nLED OFF\nemergencyTriggered = false\nPublish 'emergency_returned'\nBack to MAIN_SCREEN"]
     end
 
     SAVE_PREV["Save current S7 as\npreviousDistance7"]

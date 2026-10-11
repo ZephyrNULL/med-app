@@ -49,6 +49,10 @@ app.*.map.json
 **/.pio
 
 # Care Cube runtime artifacts
+*.err
+*.log
 schedule_received.json
-tools/*.err
-tools/*.log
+virtual_device_cmd.txt
+tools/virtual_device_cmd.txt
+wokwi/run_stdout.txt
+tools/wokwi-cli.exe

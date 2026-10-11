@@ -62,6 +62,7 @@ TAKEN_DEBOUNCE = 3
 
 sensor_distance = {n: EMPTY_MM for n in range(1, 8)}
 taken_readings = 0
+emergency_return_readings = 0
 
 
 def log(msg):
@@ -125,9 +126,12 @@ def publish_event(client, event_type, sensor_number, ring=False):
         log(f"MQTT -> [{TOPIC_EVENT}] {json.dumps(payload)}")
     except Exception as e:
         log(f"publish event failed: {e}")
-    # A reminder means the medicine is (still) in that bay.
-    if event_type in ("reminder_started", "emergency_taken"):
+    # A reminder means the medicine is (still) in that bay. An emergency
+    # "taken" means the container has been REMOVED (bay reads empty).
+    if event_type == "reminder_started":
         sensor_distance[sensor_number] = PRESENT_MM
+    elif event_type == "emergency_taken":
+        sensor_distance[sensor_number] = EMPTY_MM
     if ring:
         ring_alarm()
         log(f"[BUZZER] ALARM ringing for sensor {sensor_number}")
@@ -242,17 +246,36 @@ def alarm_loop(client):
 
 
 def tof_loop(client):
-    """Firmware behaviour: while a dose alarm is ringing, read the active
-    bay's ToF distance every 500ms. Three consecutive readings > 90mm
+    """Firmware behaviour: while a normal dose alarm is ringing, read the
+    active bay's ToF distance every 500ms. Three consecutive readings > 90mm
     (bay empty) confirm the patient took the medicine -> publish `taken`
-    and silence the buzzer."""
-    global active_alarm, taken_readings
+    and silence the buzzer.
+
+    For the emergency bay (S7) the rule is inverted: the alarm persists
+    until the container is placed BACK (distance <= 90mm), which publishes
+    `emergency_returned` and silences the buzzer (mirrors the firmware's
+    EMERGENCY_TAKEN state)."""
+    global active_alarm, taken_readings, emergency_return_readings
     while True:
         connected.wait()
         if active_alarm is not None:
             sensor = active_alarm["sensor_number"]
             dist = sensor_distance.get(sensor, EMPTY_MM)
-            if dist > 90:
+            if sensor == 7:
+                # Emergency: container back -> resolve.
+                if dist <= 90:
+                    emergency_return_readings += 1
+                    log(f"[TOF] S7 {dist}mm <= 90mm (container back) "
+                        f"({emergency_return_readings}/{TAKEN_DEBOUNCE})")
+                    if emergency_return_readings >= TAKEN_DEBOUNCE:
+                        emergency_return_readings = 0
+                        stop_alarm_if_any("S7 container returned")
+                        publish_event(client, "emergency_returned", 7)
+                else:
+                    if emergency_return_readings:
+                        log(f"[TOF] S7 {dist}mm > 90mm - reset count")
+                    emergency_return_readings = 0
+            elif dist > 90:
                 taken_readings += 1
                 log(f"[TOF] S{sensor} {dist}mm > 90mm "
                     f"({taken_readings}/{TAKEN_DEBOUNCE})")
@@ -266,6 +289,7 @@ def tof_loop(client):
                 taken_readings = 0
         else:
             taken_readings = 0
+            emergency_return_readings = 0
         time.sleep(0.5)
 
 
@@ -273,7 +297,7 @@ CMDFILE = "virtual_device_cmd.txt"
 
 
 def handle_command(client, line):
-    global active_alarm, taken_readings
+    global active_alarm, taken_readings, emergency_return_readings
     parts = line.split()
     if not parts:
         return True
@@ -308,8 +332,21 @@ def handle_command(client, line):
             log("slot must be 1..6")
         return True
     if cmd == "emergency":
-        stop_alarm_if_any("emergency")
+        # Mirrors firmware: only fires when no other alarm is active, and
+        # the alarm persists until the container is placed back (`putback`).
+        if active_alarm is not None:
+            log("emergency ignored - another alarm is already ringing")
+            return True
+        active_alarm = {"sensor_number": 7}
+        emergency_return_readings = 0
+        taken_readings = 0
+        sensor_distance[7] = EMPTY_MM
         publish_event(client, "emergency_taken", 7, ring=True)
+        log("[BUZZER] EMERGENCY alarm ringing (waiting for container to be put back)")
+        return True
+    if cmd == "putback":
+        sensor_distance[7] = PRESENT_MM
+        log("[TOF] Emergency container placed back in S7 - resolving alarm")
         return True
     if cmd == "status":
         publish_status(client)
@@ -317,12 +354,13 @@ def handle_command(client, line):
     if cmd in ("quit", "exit"):
         return False
     log("Unknown command. Use: reminder <1-6> | take <1-6> | taken <1-6> | "
-        "emergency | status | quit")
+        "emergency | putback | status | quit")
     return True
 
 
 def interactive_loop(client):
-    log("Commands: reminder <1-6> | take <1-6> | taken <1-6> | emergency | status | quit")
+    log("Commands: reminder <1-6> | take <1-6> | taken <1-6> | "
+        "emergency | putback | status | quit")
     log(f"Tip: you can also put commands in {CMDFILE} (one per line) - auto-read.")
     while True:
         try:

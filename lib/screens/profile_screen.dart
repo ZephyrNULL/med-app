@@ -17,6 +17,7 @@ class ProfileScreen extends StatelessWidget {
     final appState = context.watch<AppState>();
     final profile = appState.profile;
     final repo = appState.repo;
+    final online = repo.boxOnline;
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
 
@@ -102,28 +103,26 @@ class ProfileScreen extends StatelessWidget {
                     clipBehavior: Clip.antiAlias,
                     child: Column(
                       children: [
-                        ListTile(
-                          leading: const Icon(Icons.sensors),
-                          title: const Text('Device ID'),
-                          trailing: Text(
-                            repo.deviceId ?? 'Not paired',
-                            style: theme.textTheme.titleMedium
-                                ?.copyWith(fontWeight: FontWeight.w600),
+                        if (online) ...[
+                          ListTile(
+                            leading: const Icon(Icons.sensors),
+                            title: const Text('Device ID'),
+                            trailing: Text(
+                              repo.deviceId ?? 'Not paired',
+                              style: theme.textTheme.titleMedium
+                                  ?.copyWith(fontWeight: FontWeight.w600),
+                            ),
                           ),
-                        ),
-                        const Divider(height: 1, indent: 56),
+                          const Divider(height: 1, indent: 56),
+                        ],
                         ListTile(
                           leading: Icon(
-                            repo.mqttConnected
-                                ? Icons.link
-                                : Icons.link_off,
-                            color: repo.mqttConnected
-                                ? Colors.green
-                                : Colors.orange,
+                            online ? Icons.link : Icons.link_off,
+                            color: online ? Colors.green : Colors.orange,
                           ),
-                          title: const Text('MQTT connection'),
+                          title: const Text('Box connection'),
                           trailing: StatusChip(
-                            active: repo.mqttConnected,
+                            active: online,
                             activeText: 'Online',
                             inactiveText: 'Offline',
                           ),
@@ -133,10 +132,10 @@ class ProfileScreen extends StatelessWidget {
                           leading: const Icon(Icons.schedule),
                           title: const Text('Last synced'),
                           trailing: Text(
-                            repo.lastSynced != null
+                            online && repo.lastSynced != null
                                 ? DateFormat('MMM d, HH:mm')
                                     .format(repo.lastSynced!)
-                                : 'Never',
+                                : 'Offline',
                             style: theme.textTheme.titleMedium
                                 ?.copyWith(fontWeight: FontWeight.w600),
                           ),
@@ -198,13 +197,15 @@ class ProfileScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 16),
 
-                  // Care team (role-dependent)
-                  if (appState.isCaregiver)
-                    const _CaregiverLinks()
-                  else
-                    _PatientCareTeam(patientId: profile.id),
-
-                  const SizedBox(height: 16),
+                  // Care team (role-dependent). Hidden while the box is
+                  // offline so persisted relationships are not shown as live.
+                  if (online) ...[
+                    if (appState.isCaregiver)
+                      const _CaregiverLinks()
+                    else
+                      _PatientCareTeam(patientId: profile.id),
+                    const SizedBox(height: 16),
+                  ],
 
                   OutlinedButton.icon(
                     onPressed: () => Navigator.push(
@@ -311,8 +312,9 @@ class _ConnectBoxCard extends StatelessWidget {
     final scheme = theme.colorScheme;
     final appState = context.watch<AppState>();
     final repo = appState.repo;
-    final connected = repo.mqttConnected;
+    final connected = repo.boxOnline;
     final deviceId = repo.deviceId;
+    final paired = deviceId != null;
     final caregiver = appState.isCaregiver;
 
     return Card(
@@ -333,9 +335,11 @@ class _ConnectBoxCard extends StatelessWidget {
                   child: Text(
                     connected
                         ? 'Box connected'
-                        : (caregiver
-                            ? 'Connect to your patient\u2019s box'
-                            : 'Connect to your box'),
+                        : (paired
+                            ? 'Box offline'
+                            : (caregiver
+                                ? 'Connect to your patient\u2019s box'
+                                : 'Connect to your box')),
                     style: theme.textTheme.titleSmall
                         ?.copyWith(fontWeight: FontWeight.w700),
                   ),
@@ -365,14 +369,14 @@ class _ConnectBoxCard extends StatelessWidget {
               onPressed: () => ProfileScreen._connectBox(context),
               icon: const Icon(Icons.link),
               label: Text(
-                connected
+                connected || paired
                     ? 'Pair/connect a different box'
                     : (caregiver
                         ? 'Connect to patient\u2019s box'
                         : 'Connect to ESP32 box'),
               ),
             ),
-            if (deviceId != null) ...[
+            if (deviceId != null && connected) ...[
               const SizedBox(height: 8),
               Text(
                 'Current box: $deviceId',

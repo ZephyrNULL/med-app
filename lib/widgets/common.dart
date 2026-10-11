@@ -179,6 +179,45 @@ class InfoCard extends StatelessWidget {
   }
 }
 
+/// Shown in place of live box data (readings, schedules, connection details)
+/// while the box is not reporting. Keeps persisted history from being
+/// presented as if it were current.
+class BoxOfflineCard extends StatelessWidget {
+  final String? message;
+  const BoxOfflineCard({super.key, this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Card(
+      color: scheme.surfaceContainerHighest,
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          children: [
+            Icon(Icons.cloud_off_outlined,
+                size: 40, color: scheme.onSurfaceVariant),
+            const SizedBox(height: 12),
+            Text('Box not reporting',
+                style: theme.textTheme.titleMedium
+                    ?.copyWith(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 6),
+            Text(
+              message ??
+                  'Your Care Cube is offline, so live data is hidden until it '
+                      'starts reporting again.',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium
+                  ?.copyWith(color: scheme.onSurfaceVariant, height: 1.4),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// Section header with an optional trailing widget.
 class SectionHeader extends StatelessWidget {
   final String title;

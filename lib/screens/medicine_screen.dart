@@ -15,72 +15,83 @@ class MedicineScreen extends StatelessWidget {
     final schedules = repo.schedules;
     final enabledCount = schedules.where((s) => s.enabled).length;
     final scheme = Theme.of(context).colorScheme;
+    // Schedules are pushed from the box; while it is not reporting, hide the
+    // persisted plan rather than presenting it as current.
+    final online = repo.boxOnline;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Medicine'),
         actions: [
-          IconButton(
-            tooltip: 'Add dose',
-            onPressed: () => _openEditor(context, null),
-            icon: const Icon(Icons.add),
-          ),
+          if (online)
+            IconButton(
+              tooltip: 'Add dose',
+              onPressed: () => _openEditor(context, null),
+              icon: const Icon(Icons.add),
+            ),
         ],
       ),
-      body: schedules.isEmpty
-          ? _EmptyState(onAdd: () => _openEditor(context, null))
-          : RefreshIndicator(
-              onRefresh: repo.refreshFromServer,
-              child: ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                  _SummaryCard(
-                    totalDoses: schedules.length,
-                    enabledDoses: enabledCount,
-                  ),
-                  const SizedBox(height: 16),
-                  SectionHeader(
-                    title: 'Dose schedule',
-                    trailing: Text(
-                      '$enabledCount active',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: scheme.onSurfaceVariant),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  for (final s in schedules)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: _ScheduleTile(
-                        schedule: s,
-                        onTap: () => _openEditor(context, s),
-                        onDelete: () async {
-                          final id = s.id;
-                          if (id == null) return;
-                          try {
-                            await repo.deleteSchedule(id);
-                          } catch (e) {
-                            if (context.mounted) {
-                              showAppToast(context,
-                                  'Could not delete dose: $e',
-                                  destructive: true);
-                            }
-                          }
-                        },
+      body: !online
+          ? const BoxOfflineCard(
+              message: 'Your Care Cube is offline, so your dose schedule is '
+                  'hidden until it starts reporting again.',
+            )
+          : schedules.isEmpty
+              ? _EmptyState(onAdd: () => _openEditor(context, null))
+              : RefreshIndicator(
+                  onRefresh: repo.refreshFromServer,
+                  child: ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: [
+                      _SummaryCard(
+                        totalDoses: schedules.length,
+                        enabledDoses: enabledCount,
                       ),
-                    ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'The box stores 2 days (morning, afternoon and night). '
-                    'Bay 7 is reserved '
-                    'for emergency doses and cannot be scheduled.',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: scheme.onSurfaceVariant),
-                    textAlign: TextAlign.center,
+                      const SizedBox(height: 16),
+                      SectionHeader(
+                        title: 'Dose schedule',
+                        trailing: Text(
+                          '$enabledCount active',
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(color: scheme.onSurfaceVariant),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      for (final s in schedules)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: _ScheduleTile(
+                            schedule: s,
+                            onTap: () => _openEditor(context, s),
+                            onDelete: () async {
+                              final id = s.id;
+                              if (id == null) return;
+                              try {
+                                await repo.deleteSchedule(id);
+                              } catch (e) {
+                                if (context.mounted) {
+                                  showAppToast(context,
+                                      'Could not delete dose: $e',
+                                      destructive: true);
+                                }
+                              }
+                            },
+                          ),
+                        ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'The box stores 2 days (morning, afternoon and night). '
+                        'Bay 7 is reserved '
+                        'for emergency doses and cannot be scheduled.',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: scheme.onSurfaceVariant),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
                   ),
-                ],
-              ),
-            ),
+                ),
     );
   }
 

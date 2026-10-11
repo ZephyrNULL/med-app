@@ -19,6 +19,7 @@ class HomeScreen extends StatelessWidget {
     final reading = repo.latestReading;
     final schedules = repo.schedules;
     final events = repo.events;
+    final online = repo.boxOnline;
     final nextDose = _nextDose(schedules);
 
     final now = DateTime.now();
@@ -115,113 +116,128 @@ class HomeScreen extends StatelessWidget {
 
             // Connection status
             ConnectionStatusCard(
-              connected: repo.mqttConnected,
+              connected: online,
               lastSynced: repo.lastSynced != null
                   ? DateFormat.Hm().format(repo.lastSynced!)
                   : null,
             ),
             const SizedBox(height: 16),
 
-            // Dose progress today (remaining; drains as doses are handled)
-            _DoseProgressCard(
-              remainingToday: remainingToday,
-              handledToday: handledToday,
-              totalDoses: totalDoses,
-            ),
-            const SizedBox(height: 16),
+            // Everything below is live box data (readings, schedules and the
+            // alarms they drive). While the box is not reporting it is shown
+            // as offline instead of presenting persisted history as current.
+            if (!online)
+              const BoxOfflineCard(
+                message: 'Your Care Cube is offline, so live temperature, '
+                    "humidity and today's doses are hidden until it starts "
+                    'reporting again.\n\nYou can still manage your doses from '
+                    'the Medicine tab.',
+              )
+            else ...[
+              // Dose progress today (remaining; drains as doses are handled)
+              _DoseProgressCard(
+                remainingToday: remainingToday,
+                handledToday: handledToday,
+                totalDoses: totalDoses,
+              ),
+              const SizedBox(height: 16),
 
-            // Next dose card
-            _NextDoseCard(schedule: nextDose),
-            const SizedBox(height: 16),
+              // Next dose card
+              _NextDoseCard(schedule: nextDose),
+              const SizedBox(height: 16),
+            ],
 
             // Quick actions
             _QuickActions(onNavigate: onNavigate),
-            const SizedBox(height: 16),
 
-            // Environment + device info
-            const SectionHeader(title: 'Box environment'),
-            Padding(
-              padding: const EdgeInsets.only(top: 4, bottom: 8),
-              child: Text(
-                _freshnessLabel(repo),
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: repo.isReadingStale
-                          ? Theme.of(context).colorScheme.error
-                          : Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-              ),
-            ),
-            LayoutBuilder(
-              builder: (context, constraints) {
-                final twoCols = (constraints.maxWidth - 12) / 2;
-                return Wrap(
-                  spacing: 12,
-                  runSpacing: 12,
-                  children: [
-                    SizedBox(
-                      width: twoCols,
-                      child: InfoCard(
-                        icon: Icons.thermostat_outlined,
-                        label: 'Temperature',
-                        value: reading != null
-                            ? '${reading.temperature.toStringAsFixed(1)} °C'
-                            : '--',
-                        accent: Colors.deepOrange,
-                      ),
-                    ),
-                    SizedBox(
-                      width: twoCols,
-                      child: InfoCard(
-                        icon: Icons.water_drop_outlined,
-                        label: 'Humidity',
-                        value: reading != null
-                            ? '${reading.humidity.toStringAsFixed(1)} %'
-                            : '--',
-                        accent: Colors.blue,
-                      ),
-                    ),
-                    SizedBox(
-                      width: twoCols,
-                      child: InfoCard(
-                        icon: Icons.sensors,
-                        label: 'Device',
-                        value: repo.deviceId ?? 'Not paired',
-                        footnote: repo.mqttConnected ? 'online' : 'offline',
-                      ),
-                    ),
-                    SizedBox(
-                      width: twoCols,
-                      child: InfoCard(
-                        icon: Icons.check_circle_outline,
-                        label: 'Doses taken',
-                        value: totalDoses == 0
-                            ? '0/0'
-                            : '$handledToday/$totalDoses',
-                        accent: Colors.green,
-                      ),
-                    ),
-                  ],
-                );
-              },
-            ),
-            const SizedBox(height: 16),
+            if (online) ...[
+              const SizedBox(height: 16),
 
-            // Today's schedule list
-            SectionHeader(
-              title: 'Today\'s doses',
-              trailing: Text(
-                '$handledToday of $totalDoses taken',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: scheme.onSurfaceVariant),
+              // Environment + device info
+              const SectionHeader(title: 'Box environment'),
+              Padding(
+                padding: const EdgeInsets.only(top: 4, bottom: 8),
+                child: Text(
+                  _freshnessLabel(repo),
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: repo.isReadingStale
+                            ? Theme.of(context).colorScheme.error
+                            : Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                ),
               ),
-            ),
-            const SizedBox(height: 8),
-            _TodayStatus(
-              schedules: enabled,
-              handledSensors: handledSensors,
-              totalToday: totalDoses,
-              handledToday: handledToday,
-            ),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final twoCols = (constraints.maxWidth - 12) / 2;
+                  return Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
+                    children: [
+                      SizedBox(
+                        width: twoCols,
+                        child: InfoCard(
+                          icon: Icons.thermostat_outlined,
+                          label: 'Temperature',
+                          value: reading != null
+                              ? '${reading.temperature.toStringAsFixed(1)} °C'
+                              : '--',
+                          accent: Colors.deepOrange,
+                        ),
+                      ),
+                      SizedBox(
+                        width: twoCols,
+                        child: InfoCard(
+                          icon: Icons.water_drop_outlined,
+                          label: 'Humidity',
+                          value: reading != null
+                              ? '${reading.humidity.toStringAsFixed(1)} %'
+                              : '--',
+                          accent: Colors.blue,
+                        ),
+                      ),
+                      SizedBox(
+                        width: twoCols,
+                        child: InfoCard(
+                          icon: Icons.sensors,
+                          label: 'Device',
+                          value: repo.deviceId ?? 'Not paired',
+                          footnote: online ? 'online' : 'offline',
+                        ),
+                      ),
+                      SizedBox(
+                        width: twoCols,
+                        child: InfoCard(
+                          icon: Icons.check_circle_outline,
+                          label: 'Doses taken',
+                          value: totalDoses == 0
+                              ? '0/0'
+                              : '$handledToday/$totalDoses',
+                          accent: Colors.green,
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+              const SizedBox(height: 16),
+
+              // Today's schedule list
+              SectionHeader(
+                title: 'Today\'s doses',
+                trailing: Text(
+                  '$handledToday of $totalDoses taken',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant),
+                ),
+              ),
+              const SizedBox(height: 8),
+              _TodayStatus(
+                schedules: enabled,
+                handledSensors: handledSensors,
+                totalToday: totalDoses,
+                handledToday: handledToday,
+              ),
+            ],
           ],
         ),
       ),
