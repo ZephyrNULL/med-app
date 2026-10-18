@@ -150,6 +150,30 @@ bool doseTriggered[6] = {false, false, false, false, false, false};
 const int EMERGENCY_SLOT = 6;
 
 // ======================================================
+// EMERGENCY BAY PRESENCE (S7)
+// ======================================================
+// The emergency compartment is detected as "removed" by comparing S7 to the
+// bay's OWN learned resting distance, not to a fixed millimetre value. This
+// is what makes it work regardless of how the compartment is mounted: a bay
+// resting at 40mm and one resting at 120mm are both handled, because only the
+// CHANGE matters. The old rule ("previous <= 90 AND current > 90") also broke
+// whenever lifting the compartment made the sensor lose its target entirely
+// and report out-of-range (-1 / 8190), which is not a "valid" reading at all.
+//
+//   removed  = S7 reports no target in range (out-of-range / timeout) OR a
+//              valid reading has risen more than EMERGENCY_REMOVE_MARGIN_MM
+//              above the resting distance
+//   present  = a valid reading within EMERGENCY_REMOVE_MARGIN_MM of rest
+//
+// The resting distance is learned as the closest sustained reading, so
+// booting with the compartment already out, then inserting it, still arms the
+// detector. A single bad sample can neither move the baseline nor fire the
+// alarm: both need consecutive readings.
+#define EMERGENCY_REMOVE_MARGIN_MM 20  // mm above rest before "removed"
+#define EMERGENCY_CLOSER_HYST_MM   12  // mm closer before a new baseline
+#define EMERGENCY_CLOSER_CONFIRM   3   // consecutive reads to accept it
+
+// ======================================================
 // DAILY DOSE FLAGS
 // ======================================================
 int activeReminder = -1;
@@ -248,14 +272,17 @@ const unsigned long CLOCK_SYNC_INTERVAL = 6UL * 60UL * 60UL * 1000UL;
 #define TIMEZONE_OFFSET_SEC (5 * 3600 + 30 * 60)
 
 // ======================================================
-// PREVIOUS S7 DISTANCE
-// ======================================================
-int previousDistance7 = 0;
-
-// ======================================================
-// EMERGENCY DETECTION
+// EMERGENCY DETECTION STATE
 // ======================================================
 bool emergencyTriggered = false;
+
+// Learned resting distance (mm) of the emergency bay while the compartment is
+// in place. -1 means "not learned yet" (bay booted empty).
+int emergencyRestMm = -1;
+// Consecutive confirmations for adopting a CLOSER resting distance and for
+// confirming a removal. Kept consecutive so a lone glitch is always ignored.
+int emergencyCloserReadings = 0;
+int emergencyRemoveReadings = 0;
 
 // ======================================================
 // LCD UPDATE TIMER
@@ -1192,12 +1219,16 @@ void setup() {
   // ====================================================
   // INITIAL EMERGENCY SENSOR READING
   // ====================================================
-  // Seed with a real reading; -1 (invalid) must never be used as the
-  // "previous" edge for the emergency comparator.
-  previousDistance7 = 0;
+  // Seed the resting distance with a real reading so the "removed"
+  // comparison works from the very first loop. An invalid reading is not a
+  // usable baseline; it just means the bay boots empty and the detector will
+  // arm itself as soon as the compartment is seen.
+  emergencyRestMm = -1;
+  emergencyCloserReadings = 0;
+  emergencyRemoveReadings = 0;
   if (sensorOk[6]) {
     int first = sensor7.readRangeContinuousMillimeters();
-    previousDistance7 = isValidDistance(first) ? first : 0;
+    if (isValidDistance(first)) emergencyRestMm = first;
   }
 
   rollOverDoseFlags(currentDateTime());
@@ -1286,43 +1317,80 @@ void loop() {
   }
 
   // ====================================================
-  // EMERGENCY SENSOR S7
+  // EMERGENCY SENSOR S7 (PRESENCE)
   // ====================================================
+  // Runs only while idle on the main screen. The compartment being taken out
+  // is a sustained move away from the learned resting distance, or the sensor
+  // losing its target entirely (out-of-range); a return is a sustained
+  // reading back at the resting distance. Everything is debounced, and the
+  // resting distance is learned, so neither an absolute millimetre value nor
+  // an out-of-range report can defeat the detector the way the old rule did.
   if (activeReminder == -1 &&
       displayState == MAIN_SCREEN &&
       !emergencyTriggered)
   {
-    // Both edges must be real readings, otherwise a glitch across the
-    // threshold reports a phantom emergency dose.
-    if (isValidDistance(previousDistance7) &&
-        isValidDistance(distance7) &&
-        previousDistance7 <= MEDICINE_THRESHOLD &&
-        distance7 > MEDICINE_THRESHOLD)
-    {
-      emergencyTriggered = true;
-      displayState = EMERGENCY_TAKEN;
-      messageStartTime = millis();
-      lastReminderRepublish = millis();
-      turnOnLED(6);
-      setBuzzer(true);
+    bool s7Valid = isSensorOk(6) && isValidDistance(distance7);
+    // "No target": a genuine out-of-range report or a timeout. Either means
+    // nothing is sitting in front of S7, i.e. the compartment is gone.
+    bool s7NoTarget = isSensorOk(6) && !isValidDistance(distance7);
 
-      publishEvent("emergency_taken", 7);
+    if (s7Valid) {
+      if (emergencyRestMm < 0) {
+        // First time the bay is seen holding the compartment.
+        emergencyRestMm = distance7;
+        emergencyCloserReadings = 0;
+      } else if (distance7 < emergencyRestMm - EMERGENCY_CLOSER_HYST_MM) {
+        // Clearly closer than the current baseline - a new resting position
+        // (compartment inserted). Confirm before adopting so a one-off
+        // downward glitch cannot drag the baseline to it.
+        emergencyCloserReadings++;
+        if (emergencyCloserReadings >= EMERGENCY_CLOSER_CONFIRM) {
+          emergencyRestMm = distance7;
+          emergencyCloserReadings = 0;
+        }
+      } else {
+        emergencyCloserReadings = 0;
+        // Small drift within the accepted band tracks the real resting
+        // distance without ever chasing a removal.
+        if (distance7 <= emergencyRestMm + EMERGENCY_CLOSER_HYST_MM) {
+          emergencyRestMm = (emergencyRestMm * 7 + distance7) / 8;
+        }
+      }
+    }
 
-      lcd.clear();
-      Serial.println("================================");
-      Serial.println("ATTENTION! EMERGENCY DOSE TAKEN");
-      Serial.println("================================");
+    // Removal = lost the target, or a valid reading clearly past the resting
+    // distance. Debounced so one stray sample cannot fire the alarm.
+    if (emergencyRestMm >= 0) {
+      bool removed = s7NoTarget ||
+                     (s7Valid && distance7 > emergencyRestMm + EMERGENCY_REMOVE_MARGIN_MM);
+      emergencyRemoveReadings = removed ? emergencyRemoveReadings + 1 : 0;
+
+      if (emergencyRemoveReadings >= REQUIRED_TAKEN_READINGS) {
+        emergencyTriggered = true;
+        emergencyRemoveReadings = 0;
+        emergencyCloserReadings = 0;
+        displayState = EMERGENCY_TAKEN;
+        messageStartTime = millis();
+        lastReminderRepublish = millis();
+        turnOnLED(6);
+        setBuzzer(true);
+
+        publishEvent("emergency_taken", 7);
+
+        lcd.clear();
+        Serial.println("================================");
+        Serial.println("ATTENTION! EMERGENCY DOSE TAKEN");
+        Serial.println("================================");
+      }
     }
   }
-
-  if (isValidDistance(distance7)) previousDistance7 = distance7;
 
   // ====================================================
   // EMERGENCY STATE
   // ====================================================
   // An emergency alarm is NOT timer-based: the buzzer (and the phone alarms
   // it drives via the published event) keeps ringing until the emergency
-  // container is placed BACK in bay 7 (S7 returns to <= MEDICINE_THRESHOLD).
+  // container is placed BACK in bay 7 (S7 returns to its resting distance).
   // Only that, or a caregiver's alarm/stop, may silence it.
   if (displayState == EMERGENCY_TAKEN) {
     setBuzzer(true);
@@ -1337,22 +1405,23 @@ void loop() {
 
     // Container back -> resolve. Debounced like a normal pickup so one
     // flaky sample cannot clear an active emergency.
-    if (isValidDistance(distance7)) {
-      if (distance7 <= MEDICINE_THRESHOLD) {
-        emergencyReturnReadings++;
-        if (emergencyReturnReadings >= REQUIRED_TAKEN_READINGS) {
-          emergencyReturnReadings = 0;
-          setBuzzer(false);
-          turnOffAllLEDs();
-          emergencyTriggered = false;
-          displayState = MAIN_SCREEN;
-          publishEvent("emergency_returned", 7);
-          lcd.clear();
-          Serial.println("Emergency container returned - alarm cleared");
-        }
-      } else {
+    if (isSensorOk(6) && isValidDistance(distance7) &&
+        distance7 <= emergencyRestMm + EMERGENCY_REMOVE_MARGIN_MM) {
+      emergencyReturnReadings++;
+      if (emergencyReturnReadings >= REQUIRED_TAKEN_READINGS) {
         emergencyReturnReadings = 0;
+        emergencyRemoveReadings = 0;
+        emergencyCloserReadings = 0;
+        setBuzzer(false);
+        turnOffAllLEDs();
+        emergencyTriggered = false;
+        displayState = MAIN_SCREEN;
+        publishEvent("emergency_returned", 7);
+        lcd.clear();
+        Serial.println("Emergency container returned - alarm cleared");
       }
+    } else {
+      emergencyReturnReadings = 0;
     }
 
     if (millis() - lastLCDUpdate >= 500) {

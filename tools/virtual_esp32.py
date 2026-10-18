@@ -30,6 +30,11 @@ TOPIC_ALARM_STOP = f"carecube/{DEVICE_ID}/alarm/stop"
 
 STATUS_INTERVAL_S = 2
 
+# Mirrors firmware constants
+REMINDER_REPUBLISH_S = 30        # REMINDER_REPUBLISH_MS
+REMINDER_REPUBLISH_UNTIL_S = 15 * 60  # REMINDER_REPUBLISH_UNTIL_MS
+TAKEN_MIN_ELAPSED_S = 5          # TAKEN_MIN_ELAPSED
+
 # ======================================================
 # DOSE SCHEDULE (6 slots, mirrors firmware defaults)
 # ======================================================
@@ -93,10 +98,15 @@ def beep_tick():
 
 
 def stop_alarm_if_any(reason):
+    """Silences the active alarm. Returns True only if there WAS an active
+    alarm - callers use this to publish the resolving event exactly when the
+    box's own alarm transitions, like the firmware's single-threaded loop."""
     global active_alarm
     if active_alarm is not None:
         log(f"Alarm stopped ({reason})")
         active_alarm = None
+        return True
+    return False
 
 
 def publish_status(client):
@@ -108,13 +118,13 @@ def publish_status(client):
         "timestamp": int(t),
     }
     try:
-        client.publish(TOPIC_STATUS, json.dumps(payload), qos=0, retain=False)
+        client.publish(TOPIC_STATUS, json.dumps(payload), qos=0, retain=True)
         log(f"MQTT -> [{TOPIC_STATUS}] {json.dumps(payload)}")
     except Exception as e:
         log(f"publish status failed: {e}")
 
 
-def publish_event(client, event_type, sensor_number, ring=False):
+def publish_event(client, event_type, sensor_number, ring=False, set_bay=True):
     payload = {
         "device_id": DEVICE_ID,
         "type": event_type,
@@ -128,10 +138,13 @@ def publish_event(client, event_type, sensor_number, ring=False):
         log(f"publish event failed: {e}")
     # A reminder means the medicine is (still) in that bay. An emergency
     # "taken" means the container has been REMOVED (bay reads empty).
-    if event_type == "reminder_started":
-        sensor_distance[sensor_number] = PRESENT_MM
-    elif event_type == "emergency_taken":
-        sensor_distance[sensor_number] = EMPTY_MM
+    # Only applied on the INITIAL event: the firmware never forces the
+    # bay state when it re-publishes while the alarm is still ringing.
+    if set_bay:
+        if event_type == "reminder_started":
+            sensor_distance[sensor_number] = PRESENT_MM
+        elif event_type == "emergency_taken":
+            sensor_distance[sensor_number] = EMPTY_MM
     if ring:
         ring_alarm()
         log(f"[BUZZER] ALARM ringing for sensor {sensor_number}")
@@ -162,6 +175,7 @@ def on_message(client, userdata, message):
         try:
             data = json.loads(text)
             if isinstance(data, list):
+                active_slot = active_alarm.get("slot") if active_alarm else None
                 for i in range(6):
                     slot = data[i] if i < len(data) else None
                     if slot is None:
@@ -182,14 +196,20 @@ def on_message(client, userdata, message):
                     json.dump({"slots": [dict(s, slot=i) for i, s in enumerate(dose)]}, f, indent=2)
                 log("Saved to schedule_received.json")
                 fired_keys.clear()  # allow re-test: a fresh schedule can re-trigger
+                # Firmware: a slot whose time was moved may fire again at its
+                # new time. If the RUNNING reminder's slot was disabled, the
+                # firmware also silences the alarm (silently - no event).
+                if active_slot is not None and not dose[active_slot]["enabled"]:
+                    stop_alarm_if_any("active slot disabled by schedule update")
         except Exception as e:
             log(f"JSON parse error: {e}")
     elif topic == TOPIC_ALARM_STOP:
         # Firmware echoes caregiver_stopped so the app's own alarm resolves.
-        sensor = active_alarm["sensor_number"] if active_alarm else None
-        stop_alarm_if_any("alarm/stop received")
-        if sensor is not None:
-            publish_event(client, "caregiver_stopped", sensor)
+        # The echo is sent ONLY when the box's alarm was actually ringing -
+        # same guard as the firmware's displayState check.
+        alarm = active_alarm
+        if alarm is not None and stop_alarm_if_any("alarm/stop received"):
+            publish_event(client, "caregiver_stopped", alarm["sensor_number"])
 
 
 def status_loop(client):
@@ -234,7 +254,11 @@ def alarm_loop(client):
                     continue
                 fired_keys.add(key)
                 sensor = s["sensor_number"]
-                active_alarm = {"sensor_number": sensor}
+                active_alarm = {
+                    "slot": i,
+                    "sensor_number": sensor,
+                    "started": time.time(),
+                }
                 log(f"[ALARM] {now:%H:%M:%S} matches schedule: S{sensor} fired")
                 publish_event(client, "reminder_started", sensor, ring=True)
                 break  # firmware rings just one alarm at a time
@@ -243,6 +267,32 @@ def alarm_loop(client):
             beep_tick()
 
         time.sleep(5)
+
+
+def republish_loop(client):
+    """Firmware re-publishes while an alarm rings so a phone that missed
+    (or was killed during) the first event rings again: reminder_started
+    every 30s for up to 15 minutes, emergency_taken every 30s indefinitely.
+    The 30s cadence runs from when the ALARM started, not from a global
+    timer. The re-publish never touches the simulated bay state."""
+    while True:
+        time.sleep(5)
+        connected.wait()
+        alarm = active_alarm
+        if alarm is None:
+            continue
+        sensor = alarm["sensor_number"]
+        now = time.time()
+        started = alarm.get("started", now)
+        last = alarm.get("last_republish", started)
+        if now - last < REMINDER_REPUBLISH_S:
+            continue
+        alarm["last_republish"] = now
+        elapsed = now - started
+        if sensor == 7:
+            publish_event(client, "emergency_taken", 7, set_bay=False)
+        elif elapsed < REMINDER_REPUBLISH_UNTIL_S:
+            publish_event(client, "reminder_started", sensor, set_bay=False)
 
 
 def tof_loop(client):
@@ -269,20 +319,29 @@ def tof_loop(client):
                         f"({emergency_return_readings}/{TAKEN_DEBOUNCE})")
                     if emergency_return_readings >= TAKEN_DEBOUNCE:
                         emergency_return_readings = 0
-                        stop_alarm_if_any("S7 container returned")
-                        publish_event(client, "emergency_returned", 7)
+                        if stop_alarm_if_any("S7 container returned"):
+                            publish_event(client, "emergency_returned", 7)
                 else:
                     if emergency_return_readings:
                         log(f"[TOF] S7 {dist}mm > 90mm - reset count")
                     emergency_return_readings = 0
             elif dist > 90:
-                taken_readings += 1
-                log(f"[TOF] S{sensor} {dist}mm > 90mm "
-                    f"({taken_readings}/{TAKEN_DEBOUNCE})")
-                if taken_readings >= TAKEN_DEBOUNCE:
+                # Firmware gate: a pickup can only be confirmed once the
+                # buzzer has rung for >= TAKEN_MIN_ELAPSED (5s), so a bay
+                # that was already empty cannot clear itself instantly.
+                if time.time() - active_alarm.get("started", 0) < TAKEN_MIN_ELAPSED_S:
+                    if taken_readings:
+                        log(f"[TOF] S{sensor} removed too early "
+                            f"(< {TAKEN_MIN_ELAPSED_S}s ringing) - reset count")
                     taken_readings = 0
-                    stop_alarm_if_any(f"ToF detected S{sensor} empty")
-                    publish_event(client, "taken", sensor)
+                else:
+                    taken_readings += 1
+                    log(f"[TOF] S{sensor} {dist}mm > 90mm "
+                        f"({taken_readings}/{TAKEN_DEBOUNCE})")
+                    if taken_readings >= TAKEN_DEBOUNCE:
+                        taken_readings = 0
+                        if stop_alarm_if_any(f"ToF detected S{sensor} empty"):
+                            publish_event(client, "taken", sensor)
             else:
                 if taken_readings:
                     log(f"[TOF] S{sensor} {dist}mm <= 90mm - reset count")
@@ -306,7 +365,11 @@ def handle_command(client, line):
         slot = int(parts[1])
         if 1 <= slot <= 6:
             sensor = dose[slot - 1]["sensor_number"]
-            active_alarm = {"sensor_number": sensor}
+            active_alarm = {
+                "slot": slot - 1,
+                "sensor_number": sensor,
+                "started": time.time(),
+            }
             sensor_distance[sensor] = PRESENT_MM
             taken_readings = 0
             publish_event(client, "reminder_started", sensor, ring=True)
@@ -337,7 +400,7 @@ def handle_command(client, line):
         if active_alarm is not None:
             log("emergency ignored - another alarm is already ringing")
             return True
-        active_alarm = {"sensor_number": 7}
+        active_alarm = {"sensor_number": 7, "started": time.time()}
         emergency_return_readings = 0
         taken_readings = 0
         sensor_distance[7] = EMPTY_MM
@@ -417,6 +480,8 @@ def main():
     at.start()
     tt = threading.Thread(target=tof_loop, args=(client,), daemon=True)
     tt.start()
+    rt = threading.Thread(target=republish_loop, args=(client,), daemon=True)
+    rt.start()
     ft = threading.Thread(target=file_command_loop, args=(client,), daemon=True)
     ft.start()
 

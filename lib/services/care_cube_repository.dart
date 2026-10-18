@@ -509,16 +509,36 @@ class CareCubeRepository extends ChangeNotifier {
   }
 
   // ---- Caregiver action ----
-  /// Caregiver-initiated stop. Silences the button's buzzer and this phone
-  /// immediately, then tells the firmware to stop. The box echoes a
-  /// `caregiver_stopped` event which keeps the feed (and every other phone)
-  /// in sync. This is the only path other than actually taking the dose
-  /// that is allowed to end an alarm.
+  /// Caregiver-initiated stop. Silences the buzzer and this phone and
+  /// resolves the outstanding alarm in the feed *immediately*, then tells the
+  /// firmware to stop.
+  ///
+  /// The resolution is applied locally rather than waiting on the box's
+  /// `caregiver_stopped` echo. The box only echoes when *its* alarm was
+  /// ringing, so a phone-local reminder (fired by the scanner while the box
+  /// is quiet) produced no echo at all - the Stop button sent `alarm/stop`
+  /// into the void and the banner rang forever. When the box genuinely is
+  /// ringing it still echoes `caregiver_stopped`, which is de-duplicated out
+  /// of the feed against this row and persists the resolution. This is the
+  /// only path other than actually taking the dose that ends an alarm.
   void caregiverStopAlarm() {
-    _activeAlarmBay = null;
-    AlarmSoundService().stopAlarm();
     _mqtt.stopAlarm();
-    notifyListeners();
+
+    final active =
+        (_events.isNotEmpty && _events.first.isActiveAlarm) ? _events.first : null;
+    if (active != null) {
+      _handleLocalEvent(
+        DoseEvent(
+          type: 'caregiver_stopped',
+          sensorNumber: active.sensorNumber,
+          occurredAt: DateTime.now(),
+        ),
+      );
+    } else {
+      _activeAlarmBay = null;
+      AlarmSoundService().stopAlarm();
+      notifyListeners();
+    }
   }
 
   /// Clear the local view of the alert feed. History is kept in Supabase.
