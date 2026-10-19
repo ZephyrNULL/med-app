@@ -101,8 +101,8 @@ VL53L0X sensor7;
 //   BUZZER_PASSIVE     1 = self-driving piezo element needs a tone, not DC
 #define BUZZER 2
 #define BUZZER_ACTIVE_LOW 0
-#define BUZZER_PASSIVE 0
-#define BUZZER_TONE_HZ 2000
+#define BUZZER_PASSIVE 1
+#define BUZZER_TONE_HZ 2200
 
 // ======================================================
 // MEDICINE DISTANCE THRESHOLD
@@ -122,7 +122,7 @@ VL53L0X sensor7;
 // The buzzer must ring for this long before a pickup can be confirmed, and
 // the bay must have been seen holding a dose first - otherwise a single
 // bad sample silences the alarm on its own.
-const unsigned long TAKEN_MIN_ELAPSED      = 5000UL;
+const unsigned long TAKEN_MIN_ELAPSED      = 0UL; // Stop the reminder as soon as the scheduled bay pickup is confirmed
 const unsigned long TAKEN_EMPTY_BAY_GRACE  = 90000UL;
 const int           REQUIRED_TAKEN_READINGS = 3;
 
@@ -138,7 +138,7 @@ const unsigned long REMINDER_REPUBLISH_UNTIL_MS = 15UL * 60UL * 1000UL;
 // ======================================================
 // DOSE SCHEDULE (6 slots)
 // ======================================================
-int doseSensor[6]  = {0, 1, 2, 3, 4, 5};
+int doseSensor[6]  = {2, 4, 6, 1, 3, 5}; // Activation order: S2, S4, S6, S1, S3, S5
 int doseHour[6]    = {8, 10, 12, 14, 16, 20};
 int doseMinute[6]  = {0, 0, 0, 0, 0, 0};
 bool doseEnabled[6] = {true, true, true, true, true, true};
@@ -199,6 +199,18 @@ int emergencyReturnReadings = 0;
 // ======================================================
 bool buzzerActive = false;
 unsigned long lastBuzzerToggle = 0;
+enum BuzzerMode { BUZZER_MODE_OFF, BUZZER_MODE_NORMAL_DOSE, BUZZER_MODE_EMERGENCY, BUZZER_MODE_WRONG_BAY };
+BuzzerMode buzzerMode = BUZZER_MODE_OFF;
+unsigned long wrongToneCycleStart = 0;
+bool wrongBayArmed[6] = {false, false, false, false, false, false};
+int wrongBayOccupiedDistance[6] = {-1, -1, -1, -1, -1, -1};
+int wrongBayRemoveReadings[6] = {0, 0, 0, 0, 0, 0};
+bool wrongBayRemovalPending[6] = {false, false, false, false, false, false};
+unsigned long wrongBayRemovalStart[6] = {0, 0, 0, 0, 0, 0};
+const unsigned long WRONG_BAY_DELAY_MS = 120000UL; // Wait 2 minutes before warning for an unexpected removal
+int wrongBaySensor = -1;
+unsigned long wrongAlertStartTime = 0;
+const unsigned long WRONG_BAY_ALERT_TIME = 10000UL;
 
 // ======================================================
 // DISPLAY STATES
@@ -207,16 +219,18 @@ enum DisplayState {
   MAIN_SCREEN,
   MEDICINE_REMINDER,
   MEDICINE_TAKEN,
-  EMERGENCY_TAKEN
+  EMERGENCY_TAKEN,
+  WRONG_DOSE_ALERT
 };
 
 DisplayState displayState = MAIN_SCREEN;
+DisplayState wrongAlertReturnState = MAIN_SCREEN;
 
 // ======================================================
 // MESSAGE TIMER
 // ======================================================
 unsigned long messageStartTime = 0;
-const unsigned long MEDICINE_MESSAGE_TIME = 30000UL;
+const unsigned long MEDICINE_MESSAGE_TIME = 30000UL; // Keep MEDICINE TAKEN on screen for 30 seconds
 
 // ======================================================
 // SENSOR DISTANCES
@@ -308,43 +322,51 @@ void buzzerSetup() {
   pinMode(BUZZER, OUTPUT);
   writeBuzzerLevel(false);
   buzzerActive = false;
+  buzzerMode = BUZZER_MODE_OFF;
 #if BUZZER_PASSIVE
-  ledcSetup(0, 2000, 10);
-  ledcAttachPin(BUZZER, 0);
-  ledcWrite(0, 0);
+  // ESP32 Arduino Core 3.x uses pin-based LEDC functions.
+  ledcAttach(BUZZER, BUZZER_TONE_HZ, 10);
+  ledcWrite(BUZZER, 0);
+#endif
+}
+
+void setBuzzerMode(BuzzerMode mode) {
+  if (buzzerMode == mode) return;
+  buzzerMode = mode;
+  buzzerActive = (mode != BUZZER_MODE_OFF);
+  lastBuzzerToggle = millis();
+  wrongToneCycleStart = millis();
+#if BUZZER_PASSIVE
+  if (mode == BUZZER_MODE_OFF) {
+    ledcWrite(BUZZER, 0);
+    writeBuzzerLevel(false);
+  } else if (mode == BUZZER_MODE_NORMAL_DOSE) {
+    ledcWriteTone(BUZZER, 2200); ledcWrite(BUZZER, 512);
+  } else if (mode == BUZZER_MODE_EMERGENCY) {
+    ledcWriteTone(BUZZER, 1200); ledcWrite(BUZZER, 512);
+  } else {
+    ledcWriteTone(BUZZER, 700); ledcWrite(BUZZER, 512);
+  }
+#else
+  writeBuzzerLevel(mode != BUZZER_MODE_OFF);
 #endif
 }
 
 void setBuzzer(bool on) {
-  if (buzzerActive == on) return;
-  buzzerActive = on;
-  if (!on) {
-#if BUZZER_PASSIVE
-    ledcWrite(0, 0);
-#endif
-    writeBuzzerLevel(false);
-    return;
-  }
-#if BUZZER_PASSIVE
-  ledcWriteTone(0, BUZZER_TONE_HZ);
-#else
-  writeBuzzerLevel(true);
-#endif
+  setBuzzerMode(on ? BUZZER_MODE_NORMAL_DOSE : BUZZER_MODE_OFF);
 }
 
-// Pulse the buzzer while an alarm is active. Call once per loop.
 void serviceBuzzer() {
-  if (!buzzerActive) return;
-  if (millis() - lastBuzzerToggle < 250UL) return;
-  lastBuzzerToggle = millis();
-  // A passive element already makes sound from the tone; pulsing it just
-  // chops it up. An active buzzer needs the pulsing to be clearly heard.
-#if !BUZZER_PASSIVE
-  if (digitalRead(BUZZER) == (BUZZER_ACTIVE_LOW ? LOW : HIGH)) {
-    writeBuzzerLevel(false);
-  } else {
-    writeBuzzerLevel(true);
-  }
+  if (!buzzerActive || buzzerMode != BUZZER_MODE_WRONG_BAY) return;
+  unsigned long phase = (millis() - wrongToneCycleStart) % 1200UL;
+#if BUZZER_PASSIVE
+  if (phase < 250UL) { ledcWriteTone(BUZZER, 700); ledcWrite(BUZZER, 512); }
+  else if (phase < 400UL) { ledcWrite(BUZZER, 0); }
+  else if (phase < 650UL) { ledcWriteTone(BUZZER, 1500); ledcWrite(BUZZER, 512); }
+  else { ledcWrite(BUZZER, 0); }
+#else
+  if (phase < 250UL || (phase >= 400UL && phase < 650UL)) writeBuzzerLevel(true);
+  else writeBuzzerLevel(false);
 #endif
 }
 
@@ -1037,6 +1059,105 @@ void displayMedicineTaken() {
   print12HourTime(doseHour[nextDose], doseMinute[nextDose]);
 }
 
+int detectWrongBayRemoval() {
+  int distances[6] = {distance1, distance2, distance3, distance4, distance5, distance6};
+  int scheduledBay = (activeReminder >= 0 && activeReminder < 6) ? doseSensor[activeReminder] : -1;
+
+  // A bay is only called a wrong-time pickup if it stays removed for 2 minutes.
+  // This gives the scheduled pickup logic time to confirm a correct dose and
+  // prevents a correct pickup from causing a second warning after the LCD returns.
+  const int WRONG_BAY_CONFIRM_READINGS = 2;
+  const int WRONG_BAY_REMOVE_MARGIN_MM = 25;
+
+  for (int bay = 0; bay < 6; bay++) {
+    if (!isSensorOk(bay)) {
+      wrongBayRemoveReadings[bay] = 0;
+      wrongBayRemovalPending[bay] = false;
+      continue;
+    }
+
+    // Never classify the currently scheduled compartment as a wrong bay.
+    if (bay == scheduledBay || displayState == MEDICINE_TAKEN) {
+      wrongBayRemoveReadings[bay] = 0;
+      wrongBayRemovalPending[bay] = false;
+      continue;
+    }
+
+    int d = distances[bay];
+    bool valid = isValidDistance(d);
+
+    // Learn each bay's occupied/resting distance independently (important for S6).
+    if (valid && wrongBayOccupiedDistance[bay] < 0) {
+      wrongBayOccupiedDistance[bay] = d;
+      wrongBayArmed[bay] = true;
+      wrongBayRemoveReadings[bay] = 0;
+      wrongBayRemovalPending[bay] = false;
+      continue;
+    }
+
+    // A closer reading means the compartment has been restored / occupied.
+    // Cancel the two-minute pending warning and refresh its baseline.
+    if (valid && wrongBayOccupiedDistance[bay] >= 0 &&
+        d < wrongBayOccupiedDistance[bay] - WRONG_BAY_REMOVE_MARGIN_MM) {
+      wrongBayOccupiedDistance[bay] = d;
+      wrongBayArmed[bay] = true;
+      wrongBayRemoveReadings[bay] = 0;
+      wrongBayRemovalPending[bay] = false;
+      continue;
+    }
+
+    bool looksRemoved = !valid ||
+        (wrongBayOccupiedDistance[bay] >= 0 &&
+         d > wrongBayOccupiedDistance[bay] + WRONG_BAY_REMOVE_MARGIN_MM);
+
+    if (wrongBayArmed[bay] && looksRemoved) {
+      wrongBayRemoveReadings[bay]++;
+      if (wrongBayRemoveReadings[bay] >= WRONG_BAY_CONFIRM_READINGS) {
+        if (!wrongBayRemovalPending[bay]) {
+          wrongBayRemovalPending[bay] = true;
+          wrongBayRemovalStart[bay] = millis();
+          Serial.print("Unexpected removal detected on S");
+          Serial.print(bay + 1);
+          Serial.println("; waiting 2 minutes before warning.");
+        }
+        if (millis() - wrongBayRemovalStart[bay] >= WRONG_BAY_DELAY_MS) {
+          wrongBayArmed[bay] = false;
+          wrongBayOccupiedDistance[bay] = -1;
+          wrongBayRemoveReadings[bay] = 0;
+          wrongBayRemovalPending[bay] = false;
+          return bay;
+        }
+      }
+    } else {
+      wrongBayRemoveReadings[bay] = 0;
+      wrongBayRemovalPending[bay] = false;
+      // Track small downward drift only; never follow rising readings.
+      if (valid && wrongBayOccupiedDistance[bay] >= 0 &&
+          d < wrongBayOccupiedDistance[bay]) {
+        wrongBayOccupiedDistance[bay] = d;
+      }
+    }
+  }
+  return -1;
+}
+
+void startWrongBayAlert(int bay) {
+  wrongBaySensor = bay;
+  wrongAlertReturnState = displayState;
+  wrongAlertStartTime = millis();
+  displayState = WRONG_DOSE_ALERT;
+  setBuzzerMode(BUZZER_MODE_WRONG_BAY);
+  turnOnLED(bay);
+  lcd.clear();
+  lcd.setCursor(0, 0); lcd.print(" WARNING: WRONG BAY ");
+  lcd.setCursor(0, 1); lcd.print("Medicine removed from");
+  lcd.setCursor(0, 2); lcd.print("Sensor "); lcd.print(bay + 1);
+  lcd.setCursor(0, 3); lcd.print("Check dose schedule!");
+  publishEvent("wrong_bay_taken", bay + 1);
+  Serial.print("WARNING: medicine removed from unexpected sensor ");
+  Serial.println(bay + 1);
+}
+
 // ======================================================
 // DISPLAY: EMERGENCY
 // ======================================================
@@ -1317,6 +1438,17 @@ void loop() {
   }
 
   // ====================================================
+  // Detect an unexpected pickup from a different medicine bay.
+  if (!emergencyTriggered && displayState != MEDICINE_TAKEN &&
+      displayState != EMERGENCY_TAKEN && displayState != WRONG_DOSE_ALERT) {
+    int wrongBay = detectWrongBayRemoval();
+    if (wrongBay >= 0) {
+      startWrongBayAlert(wrongBay);
+      serviceBuzzer();
+      return;
+    }
+  }
+
   // EMERGENCY SENSOR S7 (PRESENCE)
   // ====================================================
   // Runs only while idle on the main screen. The compartment being taken out
@@ -1373,7 +1505,7 @@ void loop() {
         messageStartTime = millis();
         lastReminderRepublish = millis();
         turnOnLED(6);
-        setBuzzer(true);
+        setBuzzerMode(BUZZER_MODE_EMERGENCY);
 
         publishEvent("emergency_taken", 7);
 
@@ -1393,7 +1525,7 @@ void loop() {
   // container is placed BACK in bay 7 (S7 returns to its resting distance).
   // Only that, or a caregiver's alarm/stop, may silence it.
   if (displayState == EMERGENCY_TAKEN) {
-    setBuzzer(true);
+    setBuzzerMode(BUZZER_MODE_EMERGENCY);
     turnOnLED(6);
 
     // Re-publish while still ringing so a phone that missed (or was killed
@@ -1448,7 +1580,7 @@ void loop() {
       lastReminderRepublish = millis();
 
       turnOnLED(doseSensor[i]);
-      setBuzzer(true);
+      setBuzzerMode(BUZZER_MODE_NORMAL_DOSE);
 
       publishEvent("reminder_started", doseSensor[i] + 1);
 
@@ -1495,8 +1627,20 @@ void loop() {
 
     if (readingOk && timeElapsed && sawPickup &&
         takenReadingCount >= REQUIRED_TAKEN_READINGS) {
-      setBuzzer(false);
+      setBuzzerMode(BUZZER_MODE_OFF); // Silence immediately on confirmed correct pickup
       turnOnLED(sensorNumber);
+
+      // The scheduled dose was correctly taken: disarm this bay's wrong-dose
+      // detector and clear its old occupied baseline. Otherwise, when the
+      // 30-second MEDICINE TAKEN screen ends, the empty bay could be mistaken
+      // for a wrong-time pickup and trigger a second warning.
+      if (sensorNumber >= 0 && sensorNumber < 6) {
+        wrongBayArmed[sensorNumber] = false;
+        wrongBayOccupiedDistance[sensorNumber] = -1;
+        wrongBayRemoveReadings[sensorNumber] = 0;
+        wrongBayRemovalPending[sensorNumber] = false;
+      }
+
       displayState = MEDICINE_TAKEN;
       messageStartTime = millis();
       takenReadingCount = 0;
@@ -1509,7 +1653,7 @@ void loop() {
       Serial.println(" -> MEDICINE TAKEN");
     } else {
       // Everything that is not a confirmed pickup keeps ringing.
-      setBuzzer(true);
+      setBuzzerMode(BUZZER_MODE_NORMAL_DOSE);
       turnOnLED(sensorNumber);
 
       if (millis() - lastLCDUpdate >= 500) {
@@ -1522,6 +1666,30 @@ void loop() {
   }
 
   // ====================================================
+  // WRONG-BAY WARNING: play its distinct pattern for 10 seconds, then
+  // return to the screen/state that was active before the warning. This state
+  // is entered only after an unexpected bay has remained removed for 2 minutes.
+  if (displayState == WRONG_DOSE_ALERT) {
+    setBuzzerMode(BUZZER_MODE_WRONG_BAY);
+    if (millis() - lastLCDUpdate >= 500) {
+      lastLCDUpdate = millis();
+      lcd.setCursor(0, 0); lcd.print(" WARNING: WRONG BAY ");
+      lcd.setCursor(0, 1); lcd.print("Medicine removed from");
+      lcd.setCursor(0, 2); lcd.print("Sensor "); lcd.print(wrongBaySensor + 1); lcd.print("           ");
+      lcd.setCursor(0, 3); lcd.print("Check dose schedule!");
+    }
+    serviceBuzzer();
+    if (millis() - wrongAlertStartTime >= WRONG_BAY_ALERT_TIME) {
+      setBuzzerMode(wrongAlertReturnState == MEDICINE_REMINDER ? BUZZER_MODE_NORMAL_DOSE : BUZZER_MODE_OFF);
+      turnOffAllLEDs();
+      displayState = wrongAlertReturnState;
+      wrongBaySensor = -1;
+      lcd.clear();
+      lastLCDUpdate = 0;
+    }
+    return;
+  }
+
   // MEDICINE TAKEN STATE
   // ====================================================
   if (displayState == MEDICINE_TAKEN) {
@@ -1583,5 +1751,5 @@ void loop() {
   Serial.print(" S6:"); Serial.print(distance6);
   Serial.print(" S7:"); Serial.println(distance7);
 
-  delay(500);
+  delay(20);
 }

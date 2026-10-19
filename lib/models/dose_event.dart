@@ -1,7 +1,7 @@
 /// A dose event published by the ESP32 on `carecube/{device_id}/event`.
 ///
 /// types: reminder_started | taken | missed | emergency_taken |
-///        emergency_returned | caregiver_stopped
+///        emergency_returned | caregiver_stopped | wrong_bay_taken
 class DoseEvent {
   final String? id;
   final String? boxId;
@@ -65,6 +65,8 @@ class DoseEvent {
         return 'Emergency container returned';
       case 'caregiver_stopped':
         return 'Alarm stopped by caregiver';
+      case 'wrong_bay_taken':
+        return 'Medicine removed from wrong bay';
       default:
         return type;
     }
@@ -72,4 +74,10 @@ class DoseEvent {
 
   bool get isActiveAlarm =>
       type == 'reminder_started' || type == 'emergency_taken';
+
+  /// True for events that only annotate the feed (a medicine removed from a
+  /// bay that had no dose due). Such events are neither an alarm nor a
+  /// resolution of one: they must never ring or silence the phone, and they
+  /// must not mask an outstanding alarm sitting below them in the feed.
+  bool get isInformational => type == 'wrong_bay_taken';
 }

@@ -110,24 +110,34 @@ class CareCubeRepository extends ChangeNotifier {
     return at != null && DateTime.now().difference(at) <= _staleAfter;
   }
 
-  /// True if the most recent event is an unacknowledged reminder or
-  /// emergency — mirrors the ESP32's MEDICINE_REMINDER / EMERGENCY_TAKEN
-  /// states. A `taken` or `caregiver_stopped` event ends it.
-  bool get hasActiveAlarm {
-    if (_events.isEmpty) return false;
-    return _events.first.isActiveAlarm;
+  /// The most recent event that actually represents an alarm state: an
+  /// active reminder/emergency or a resolution of one. Purely informational
+  /// events (e.g. `wrong_bay_taken`) are skipped, so a wrong-bay warning
+  /// landing on top of an outstanding reminder cannot hide the alarm banner
+  /// or make [hasActiveAlarm] report false.
+  DoseEvent? get _latestAlarmStateEvent {
+    for (final e in _events) {
+      if (!e.isInformational) return e;
+    }
+    return null;
   }
+
+  /// True if the most recent alarm-state event is an unacknowledged reminder
+  /// or emergency — mirrors the ESP32's MEDICINE_REMINDER / EMERGENCY_TAKEN
+  /// states. A `taken`, `caregiver_stopped` or `missed` event ends it.
+  bool get hasActiveAlarm => _latestAlarmStateEvent?.isActiveAlarm ?? false;
 
   /// UI-facing alarm state: a reminder only counts as active while the box
   /// that fired it is live. An unresolved event restored from the DB must
   /// not keep a phantom banner (or ring) alive after the box is gone.
   bool get showActiveAlarm => boxOnline && hasActiveAlarm;
 
-  /// The event currently ringing (head of the feed while it is unresolved).
-  DoseEvent? get activeAlarmEvent =>
-      (_events.isNotEmpty && _events.first.isActiveAlarm)
-          ? _events.first
-          : null;
+  /// The event currently ringing (the most recent alarm-state event while it
+  /// is unresolved).
+  DoseEvent? get activeAlarmEvent {
+    final e = _latestAlarmStateEvent;
+    return (e != null && e.isActiveAlarm) ? e : null;
+  }
 
   /// True while the ringing alarm is an emergency (bay 7 taken). Drives the
   /// red "Emergency Taken" banner.
@@ -272,7 +282,8 @@ class CareCubeRepository extends ChangeNotifier {
 
       // The box already reported this reminder; ringing again would double
       // up on the phone and insert a duplicate row.
-      if (hasActiveAlarm && _events.first.sensorNumber == s.sensorNumber) {
+      final ringing = activeAlarmEvent;
+      if (ringing != null && ringing.sensorNumber == s.sensorNumber) {
         debugPrint('[repo] local dose already ringing sensor=${s.sensorNumber}');
         continue;
       }
@@ -330,24 +341,60 @@ class CareCubeRepository extends ChangeNotifier {
   /// updates the feed, drives the phone alarm + notification, and
   /// optionally mirrors the event into Supabase.
   void _handleLocalEvent(DoseEvent event, {bool persist = false}) {
+    // Informational events (a medicine removed from a bay with no dose due)
+    // only annotate the feed. They are not an alarm and do not resolve one,
+    // so they must never ring or silence the phone, clear schedules, or
+    // change the tracked ringing bay.
+    if (event.isInformational) {
+      final isDuplicateInfo = _events.isNotEmpty &&
+          _events.first.type == event.type &&
+          _events.first.sensorNumber == event.sensorNumber &&
+          DateTime.now().difference(_events.first.occurredAt).abs() <
+              const Duration(seconds: 30);
+      if (!isDuplicateInfo) {
+        _events.insert(0, event);
+        if (_events.length > 200) {
+          _events.removeRange(200, _events.length);
+        }
+        _lastSynced = DateTime.now();
+        notifyListeners();
+        NotificationService().showAlarmNotification(
+          title: 'Medicine in the wrong bay',
+          body: 'The dose in '
+              '${MedicineSchedule.labelForBay(event.sensorNumber)} was '
+              'removed unexpectedly. Please check the schedule.',
+        );
+      }
+      if (persist && _boxId != null && !isDuplicateInfo) {
+        SupabaseService.insertDoseEvent(event.toDbMap(_boxId!))
+            .catchError((e) {
+          debugPrint('Failed to persist event: $e');
+        });
+      }
+      return;
+    }
+
     // The box repeats `reminder_started` while a dose is still outstanding
     // (so a phone that missed the first event rings again). Repeats must
-    // not stack up in the feed as if they were separate doses.
+    // not stack up in the feed as if they were separate doses. Compare
+    // against the latest alarm-state event, not the feed head, because an
+    // informational event may be sitting above it.
+    final alarmState = _latestAlarmStateEvent;
     final isRepeat = event.isActiveAlarm &&
         hasActiveAlarm &&
         _activeAlarmBay == event.sensorNumber &&
-        _events.first.type == event.type;
+        alarmState?.type == event.type;
 
     // A `caregiver_stopped` echo of a stop we already applied locally must
     // not appear twice in the feed. The echo is still persisted (below); it
     // only skips the duplicate feed row.
     final isDuplicateResolution = !event.isActiveAlarm &&
         event.type == 'caregiver_stopped' &&
-        _events.isNotEmpty &&
-        _events.first.type == 'caregiver_stopped' &&
-        _events.first.sensorNumber == event.sensorNumber &&
-        DateTime.now().difference(_events.first.occurredAt).abs() <
-            const Duration(seconds: 30);
+        _events.any((e) =>
+            e.type == 'caregiver_stopped' &&
+            e.sensorNumber == event.sensorNumber &&
+            DateTime.now().difference(e.occurredAt).abs() <
+                const Duration(seconds: 30));
 
     if (!isRepeat && !isDuplicateResolution) {
       _events.insert(0, event);
@@ -409,14 +456,11 @@ class CareCubeRepository extends ChangeNotifier {
     }
   }
 
-  /// Re-derive which bay is ringing from the head of the feed. Used after
-  /// the feed is (re)loaded so a restart or a refresh does not lose track of
-  /// an alarm that is still outstanding.
+  /// Re-derive which bay is ringing from the latest alarm-state event. Used
+  /// after the feed is (re)loaded so a restart or a refresh does not lose
+  /// track of an alarm that is still outstanding.
   void _syncActiveAlarmBay() {
-    _activeAlarmBay =
-        (_events.isNotEmpty && _events.first.isActiveAlarm)
-            ? _events.first.sensorNumber
-            : null;
+    _activeAlarmBay = activeAlarmEvent?.sensorNumber;
   }
 
   /// Reload schedules, events and the latest reading from Supabase.
@@ -524,8 +568,7 @@ class CareCubeRepository extends ChangeNotifier {
   void caregiverStopAlarm() {
     _mqtt.stopAlarm();
 
-    final active =
-        (_events.isNotEmpty && _events.first.isActiveAlarm) ? _events.first : null;
+    final active = activeAlarmEvent;
     if (active != null) {
       _handleLocalEvent(
         DoseEvent(
@@ -548,7 +591,7 @@ class CareCubeRepository extends ChangeNotifier {
   /// by a caregiver. The outstanding alarm event is kept at the head of the
   /// feed so its banner and the ringing continue on the patient side.
   void clearAlerts() {
-    final active = hasActiveAlarm ? _events.first : null;
+    final active = activeAlarmEvent;
     _events.clear();
     if (active != null) _events.add(active);
     _lastSynced = DateTime.now();

@@ -376,6 +376,7 @@ class _EventTile extends StatelessWidget {
     final isTaken = event.type == 'taken';
     final isReminder = event.type == 'reminder_started';
     final isMissed = event.type == 'missed';
+    final isWrongBay = event.type == 'wrong_bay_taken';
 
     IconData icon;
     Color color;
@@ -388,6 +389,9 @@ class _EventTile extends StatelessWidget {
     } else if (isMissed) {
       icon = Icons.error_outline;
       color = Colors.redAccent;
+    } else if (isWrongBay) {
+      icon = Icons.warning_amber_rounded;
+      color = Colors.deepOrange;
     } else if (isReminder) {
       icon = Icons.alarm;
       color = Colors.orange;

@@ -118,5 +118,18 @@ void main() {
         expect(e.isActiveAlarm, isFalse, reason: 'bay $bay');
       }
     });
+
+    test('wrong_bay_taken is informational, not an alarm', () {
+      final e = DoseEvent.fromEventJson({
+        'device_id': 'carecube-001',
+        'type': 'wrong_bay_taken',
+        'sensor_number': 3,
+        'timestamp': 1800000000,
+      });
+      expect(e.sensorNumber, 3);
+      expect(e.isActiveAlarm, isFalse);
+      expect(e.isInformational, isTrue);
+      expect(e.friendlyType, 'Medicine removed from wrong bay');
+    });
   });
 }
