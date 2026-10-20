@@ -51,6 +51,7 @@ String topicScheduleSet;
 String topicStatus;
 String topicEvent;
 String topicAlarmStop;
+String topicTimeSet;
 
 // ======================================================
 // OBJECTS
@@ -123,7 +124,12 @@ VL53L0X sensor7;
 // the bay must have been seen holding a dose first - otherwise a single
 // bad sample silences the alarm on its own.
 const unsigned long TAKEN_MIN_ELAPSED      = 0UL; // Stop the reminder as soon as the scheduled bay pickup is confirmed
-const unsigned long TAKEN_EMPTY_BAY_GRACE  = 90000UL;
+// The bay no longer has to be seen holding the dose for 90 seconds before a
+// pickup may confirm - that hang made "the right medicine does not clear the
+// alarm instantly" the common case. The bay is seeded as occupied when the
+// reminder starts (if it reads present), so a genuine pickup confirms after
+// 3 readings; this grace only covers a bay the sensor never saw loaded.
+const unsigned long TAKEN_EMPTY_BAY_GRACE  = 20000UL;
 const int           REQUIRED_TAKEN_READINGS = 3;
 
 // How late a dose may still fire. Absorbs loop jitter (the full sensor
@@ -141,7 +147,11 @@ const unsigned long REMINDER_REPUBLISH_UNTIL_MS = 15UL * 60UL * 1000UL;
 int doseSensor[6]  = {2, 4, 6, 1, 3, 5}; // Activation order: S2, S4, S6, S1, S3, S5
 int doseHour[6]    = {8, 10, 12, 14, 16, 20};
 int doseMinute[6]  = {0, 0, 0, 0, 0, 0};
-bool doseEnabled[6] = {true, true, true, true, true, true};
+// All bays ship DISABLED: the app is the single source of truth and pushes
+// the full schedule on every MQTT connect (even an empty one). Booting with
+// every bay enabled at hardcoded times is what made a box with no schedule
+// at all ring phantom alarms all day.
+bool doseEnabled[6] = {false, false, false, false, false, false};
 bool doseTriggered[6] = {false, false, false, false, false, false};
 
 // ======================================================
@@ -207,10 +217,82 @@ int wrongBayOccupiedDistance[6] = {-1, -1, -1, -1, -1, -1};
 int wrongBayRemoveReadings[6] = {0, 0, 0, 0, 0, 0};
 bool wrongBayRemovalPending[6] = {false, false, false, false, false, false};
 unsigned long wrongBayRemovalStart[6] = {0, 0, 0, 0, 0, 0};
-const unsigned long WRONG_BAY_DELAY_MS = 120000UL; // Wait 2 minutes before warning for an unexpected removal
+// Debounce for the resting baseline. A baseline adopted from ONE sample let a
+// single short glitch become the reference distance, after which every honest
+// reading looked "removed" and the box alarmed with nothing touched. Both the
+// first learning and a later re-learn now need several agreeing samples, the
+// same way the emergency bay already does.
+int wrongBayLearnReadings[6] = {0, 0, 0, 0, 0, 0};
+int wrongBayLearnValue[6] = {-1, -1, -1, -1, -1, -1};
+int wrongBayCloserReadings[6] = {0, 0, 0, 0, 0, 0};
+const int WRONG_BAY_BASELINE_CONFIRM = 3;
+const int WRONG_BAY_BASELINE_TOL_MM = 15;
+
+// When the bay first looked occupied on the current sweep (0 = not occupied).
+// ARMING is deliberately sticky and slow: a bay only starts warning after it
+// has read as holding something for WRONG_BAY_ARM_MS, and it keeps that state
+// until the warning fires or the dose is confirmed. Without the delay, a hand
+// passing over a compartment that is waiting to be refilled would arm the
+// detector, and the next honest reading of the empty floor would raise a
+// warning with nothing ever taken.
+unsigned long wrongBayOccupiedSince[6] = {0, 0, 0, 0, 0, 0};
+const unsigned long WRONG_BAY_ARM_MS = 10000UL;
+// Occupancy breaks only after this many consecutive "not holding a dose"
+// readings, mirroring how the normal reminder counts consecutive pickup
+// samples: one reading that grazes the 90mm line must not restart the arm
+// timer on a container that is still plainly sitting there.
+int wrongBayOccupiedMiss[6] = {0, 0, 0, 0, 0, 0};
+const int WRONG_BAY_OCC_CONFIRM = 3;
 int wrongBaySensor = -1;
 unsigned long wrongAlertStartTime = 0;
-const unsigned long WRONG_BAY_ALERT_TIME = 10000UL;
+// SAFETY timeout only. The warning normally ends the moment the container is
+// put back or the scheduled dose is confirmed - never on a timer. This bound
+// only covers a container carried away entirely or a sensor that lost its
+// target: the box stops buzzing, but wrongBaySensor stays set so return
+// detection (and the phone alarm it clears via wrong_bay_returned) keeps
+// running until the container is back or a caregiver stops it.
+const unsigned long WRONG_BAY_ALERT_TIME = 180000UL;
+
+// Learned resting distance (mm) of the wrong bay AT THE MOMENT THE WARNING
+// FIRED, captured before resetWrongBayState() drops the live baseline. Used
+// for the whole alert to decide whether the container has been put back -
+// including bays whose medicine sits beyond the 90mm absolute threshold (S6
+// on some units), which would otherwise never look "present" again.
+int wrongBayRestMm = -1;
+// Consecutive "present" readings required before the warning clears: same
+// debounce the pickup confirmation uses, so one glitch cannot silence it.
+int wrongBayReturnReadings = 0;
+const int WRONG_BAY_RETURN_CONFIRM = 3;
+
+// Resting distance (mm) of the SCHEDULED bay, captured when its reminder
+// starts. Dose confirmation compares against it (plus a margin) so a bay
+// whose medicine sits at 91-150mm - above the absolute 90mm threshold - is
+// not read as "already removed" and does not silence its own alarm.
+int schedRestMm = -1;
+
+// A bay whose learned resting baseline sits at or below this still counts as
+// holding medicine when it reads within WRONG_BAY_REMOVE_MARGIN_MM of it.
+// Baselines beyond it are treated as an empty floor, so a never-loaded bay
+// can never arm the wrong-pickup detector by itself.
+const int WRONG_BAY_PRESENT_MAX_BASELINE_MM = 150;
+// Millimetres above a bay's learned baseline before a reading counts as a
+// removal. Shared by the wrong-pickup detector and the dose confirmation.
+const int WRONG_BAY_REMOVE_MARGIN_MM = 25;
+
+// A bay must stay removed for this long before it is called a wrong-time
+// pickup. It used to be 2 minutes, then 10 - both long enough that the
+// container was usually already back on the table when the chirp sounded,
+// so it read as a random alarm. 2.5 s is still several sensor sweeps (a
+// momentary jostle is ignored), while a real removal rings while you are
+// still holding the container - and ends the instant you put it back.
+// Early/scheduled pickups are excluded by bayHasDoseDueSoon() instead of by
+// waiting this long.
+const unsigned long WRONG_BAY_DELAY_MS = 2500UL;
+
+// How far outside its dose time a bay may be picked up without being called a
+// wrong bay: up to 15 minutes early (people grab their medicine a minute or
+// two before the reminder) or up to the reminder catch-up window late.
+const long WRONG_BAY_EARLY_TOLERANCE_MIN = 15;
 
 // ======================================================
 // DISPLAY STATES
@@ -274,16 +356,25 @@ const unsigned long MQTT_HEARTBEAT_INTERVAL = 15000UL;
 unsigned long lastClockSync = 0;
 const unsigned long CLOCK_SYNC_INTERVAL = 6UL * 60UL * 60UL * 1000UL;
 
-// Local UTC offset used when syncing the clock from NTP.
+// Local UTC offset used when syncing the clock from NTP and when comparing
+// dose times.
 //
 // The app lets the caregiver enter a dose at, say, 08:00 LOCAL time and the
-// box fires when its own wall clock reaches 08:00. If the RTC runs on UTC
-// the dose fires offset by this many hours, which is exactly the "the box
-// rings at the wrong time" symptom on real hardware (the PC simulator uses
-// the PC's local clock, so the two only agree when this offset is set).
+// box fires when its own wall clock reaches 08:00. If the box's clock runs on
+// a different offset than the phone's, every reminder fires shifted - which is
+// exactly the "the box rings at the wrong time" symptom on real hardware.
 //
-// Default 5*3600 + 30*60 = UTC+05:30 (Sri Lanka). Change for your region.
+// The offset is no longer hard-coded for one region: the app publishes the
+// phone's own UTC offset on `time/set` whenever it connects (and with every
+// schedule push), and that value is stored in NVS. This default only applies
+// to a box that has never heard from the app.
+//
+// Default 5*3600 + 30*60 = UTC+05:30 (Sri Lanka).
 #define TIMEZONE_OFFSET_SEC (5 * 3600 + 30 * 60)
+#define TZ_OFFSET_KEY "tz_offset_min"
+int tzOffsetMin = TIMEZONE_OFFSET_SEC / 60; // minutes east of UTC
+
+long tzOffsetSec() { return (long)tzOffsetMin * 60L; }
 
 // ======================================================
 // EMERGENCY DETECTION STATE
@@ -297,6 +388,15 @@ int emergencyRestMm = -1;
 // confirming a removal. Kept consecutive so a lone glitch is always ignored.
 int emergencyCloserReadings = 0;
 int emergencyRemoveReadings = 0;
+
+// When the current run of "removed" samples started. Three readings out of a
+// continuous-range sweep land in well under a second, so a burst of I2C
+// timeouts alone could ring the emergency alarm with the compartment sitting
+// right there - and, unlike a dose, nothing can clear it except a caregiver
+// or putting a container back that was never taken out. Requiring the removal
+// to hold for this long as well means only a genuine lift still alarms.
+const unsigned long EMERGENCY_REMOVE_CONFIRM_MS = 3000UL;
+unsigned long emergencyRemoveStart = 0;
 
 // ======================================================
 // LCD UPDATE TIMER
@@ -383,13 +483,95 @@ bool isSensorOk(int sensorNumber) {
 }
 
 // ======================================================
+// WRONG-BAY STATE RESETS
+// ======================================================
+// Clear only the removal tracking (used whenever a bay is seen behaving
+// normally again, and whenever a bay must be skipped this sweep).
+void clearWrongBayRemoval(int bay) {
+  if (bay < 0 || bay > 5) return;
+  wrongBayRemoveReadings[bay] = 0;
+  wrongBayRemovalPending[bay] = false;
+  wrongBayCloserReadings[bay] = 0;
+}
+
+// Drop the learned baseline too: the bay has to be re-observed before it can
+// warn again (used after the warning fired, and after a confirmed pickup).
+void resetWrongBayState(int bay) {
+  if (bay < 0 || bay > 5) return;
+  wrongBayArmed[bay] = false;
+  wrongBayOccupiedDistance[bay] = -1;
+  wrongBayLearnReadings[bay] = 0;
+  wrongBayLearnValue[bay] = -1;
+  wrongBayOccupiedSince[bay] = 0;
+  wrongBayOccupiedMiss[bay] = 0;
+  clearWrongBayRemoval(bay);
+}
+
+// ======================================================
+// BAY PRESENCE (shared rule)
+// ======================================================
+// True when a bay's current reading means "the container is sitting in it".
+// The absolute 90mm threshold covers short baselines; the learned baseline
+// extends it so a bay whose medicine rests at 91-150mm (S6 on some units)
+// still counts as occupied. Without the extension that bay never armed the
+// wrong-pickup detector and its own reminder self-cleared as "taken".
+bool bayLooksPresent(int bay, int d, bool valid) {
+  if (!valid) return false;
+  if (d <= MEDICINE_THRESHOLD) return true;
+  int base = (bay >= 0 && bay < 6) ? wrongBayOccupiedDistance[bay] : -1;
+  if (base <= 0 || base > WRONG_BAY_PRESENT_MAX_BASELINE_MM) return false;
+  return d <= base + WRONG_BAY_REMOVE_MARGIN_MM;
+}
+
+// Same rule for the bay the wrong-bay warning is currently ringing for,
+// using the baseline captured when the warning fired (the live learned
+// baseline was dropped by resetWrongBayState at that moment).
+bool wrongBayLooksPresentNow() {
+  if (wrongBaySensor < 0 || wrongBaySensor > 5) return false;
+  if (!isSensorOk(wrongBaySensor)) return false;
+  int d = getSensorDistance(wrongBaySensor);
+  if (!isValidDistance(d)) return false;
+  if (d <= MEDICINE_THRESHOLD) return true;
+  if (wrongBayRestMm <= 0 || wrongBayRestMm > WRONG_BAY_PRESENT_MAX_BASELINE_MM) {
+    return false;
+  }
+  return d <= wrongBayRestMm + WRONG_BAY_REMOVE_MARGIN_MM;
+}
+
+// ======================================================
+// END THE WRONG-BAY WARNING
+// ======================================================
+// Restores whatever screen/state was active before the warning. Clears
+// wrongBaySensor, so call this only when the container is back, the
+// scheduled dose was confirmed, or a caregiver stopped the alarm - the
+// safety timeout deliberately does NOT call it (see WRONG_BAY_ALERT_TIME).
+void endWrongBayAlert() {
+  setBuzzerMode(wrongAlertReturnState == MEDICINE_REMINDER ? BUZZER_MODE_NORMAL_DOSE : BUZZER_MODE_OFF);
+  if (wrongAlertReturnState == MEDICINE_REMINDER && activeReminder >= 0) {
+    turnOnLED(doseSensor[activeReminder]);
+  } else {
+    turnOffAllLEDs();
+  }
+  displayState = wrongAlertReturnState;
+  wrongBaySensor = -1;
+  wrongBayRestMm = -1;
+  wrongBayReturnReadings = 0;
+  lcd.clear();
+  lastLCDUpdate = 0;
+  Serial.println("Wrong-bay warning cleared");
+}
+
+// ======================================================
 // CLOCK SOURCE (RTC, falling back to NTP/millis if the RTC is missing)
 // ======================================================
 DateTime currentDateTime() {
   if (rtcOk) return rtc.now();
   time_t t = time(nullptr);
   if (t > 1700000000UL) {
-    return DateTime((uint32_t)t);
+    // time() is UTC; dose times are LOCAL. Shifting by the configured offset
+    // before building the DateTime makes the field math work out to local
+    // wall-clock time, so a box with no RTC still fires at the entered hour.
+    return DateTime((uint32_t)(t + tzOffsetSec()));
   }
   return DateTime(2024, 1, 1, 0, 0, 0);
 }
@@ -625,10 +807,17 @@ void loadSettings() {
   wifiSsid = prefs.getString("ssid", "");
   wifiPass = prefs.getString("pass", "");
   deviceId = prefs.getString("device_id", DEFAULT_DEVICE_ID);
+  tzOffsetMin = prefs.getInt(TZ_OFFSET_KEY, TIMEZONE_OFFSET_SEC / 60);
   Serial.print("Loaded settings -> SSID: \"");
   Serial.print(wifiSsid);
   Serial.print("\" device: ");
-  Serial.println(deviceId);
+  Serial.print(deviceId);
+  Serial.print(" tz: UTC");
+  Serial.print(tzOffsetMin >= 0 ? "+" : "-");
+  Serial.print(abs(tzOffsetMin) / 60);
+  Serial.print(":");
+  if (abs(tzOffsetMin) % 60 < 10) Serial.print("0");
+  Serial.println(abs(tzOffsetMin) % 60);
 }
 
 void saveSettingsAndReboot(const char* ssid, const char* pass, const char* newDeviceId) {
@@ -778,11 +967,20 @@ void reconnectMQTT() {
 
     mqttClient.subscribe(topicScheduleSet.c_str());
     mqttClient.subscribe(topicAlarmStop.c_str());
+    mqttClient.subscribe(topicTimeSet.c_str());
 
     Serial.print("Subscribed to: ");
     Serial.println(topicScheduleSet);
     Serial.print("Subscribed to: ");
     Serial.println(topicAlarmStop);
+    Serial.print("Subscribed to: ");
+    Serial.println(topicTimeSet);
+
+    // Tell the phone what the box is showing RIGHT NOW. A phone that just
+    // (re)connected used to wait up to 30s for the next republish to learn
+    // of a live alarm - and one that restored a stale alarm from the
+    // database had no way to learn the box was actually quiet.
+    publishCurrentAlarmState();
   } else {
     Serial.print("failed, rc=");
     Serial.println(mqttClient.state());
@@ -819,15 +1017,40 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     }
 
     for (int i = 0; i < 6; i++) {
+      int prevSensor  = doseSensor[i];
+      int prevHour    = doseHour[i];
+      int prevMinute  = doseMinute[i];
+      bool prevEnabled = doseEnabled[i];
+
       if (doc[i].isNull()) {
         doseEnabled[i] = false;
-        continue;
+      } else {
+        doseSensor[i]  = (doc[i]["sensor_number"] | (i + 1)) - 1; // app sends bay 1..6 -> store 0-based
+        doseHour[i]    = doc[i]["hour"] | 12;
+        doseMinute[i]  = doc[i]["minute"] | 0;
+        doseEnabled[i] = doc[i]["enabled"] | false;
       }
 
-      doseSensor[i]  = (doc[i]["sensor_number"] | (i + 1)) - 1; // app sends bay 1..6 -> store 0-based
-      doseHour[i]    = doc[i]["hour"] | 12;
-      doseMinute[i]  = doc[i]["minute"] | 0;
-      doseEnabled[i] = doc[i]["enabled"] | false;
+      // Bays are 1..6 on the wire; anything else would light no LED and can
+      // never be confirmed, so fall back to this slot's own bay.
+      if (doseSensor[i] < 0 || doseSensor[i] > 5) doseSensor[i] = prevSensor;
+      if (doseSensor[i] < 0 || doseSensor[i] > 5) doseSensor[i] = i;
+      if (doseHour[i] < 0 || doseHour[i] > 23) doseHour[i] = prevHour;
+      if (doseMinute[i] < 0 || doseMinute[i] > 59) doseMinute[i] = prevMinute;
+
+      // The app re-publishes the FULL schedule on every reconnect, so clearing
+      // the "already fired today" flag unconditionally made every dose ring a
+      // second time whenever the broker dropped - even one that had just been
+      // taken or stopped. Only a genuine edit re-arms its slot.
+      bool changed = doseSensor[i] != prevSensor ||
+                     doseHour[i] != prevHour ||
+                     doseMinute[i] != prevMinute ||
+                     doseEnabled[i] != prevEnabled;
+      if (changed) {
+        // A slot whose time was moved must be allowed to fire again at its
+        // new time, otherwise an edit silently disables that dose for today.
+        doseTriggered[i] = false;
+      }
     }
 
     Serial.println("Schedule updated via MQTT");
@@ -844,10 +1067,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       Serial.print(doseMinute[i]);
       Serial.print(" ");
       Serial.println(doseEnabled[i] ? "ON" : "OFF");
-
-      // A slot whose time was moved must be allowed to fire again at its
-      // new time, otherwise an edit silently disables that dose for today.
-      doseTriggered[i] = false;
     }
 
     // If the slot the running reminder belongs to was disabled, stop it
@@ -863,10 +1082,64 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
 
   // ==================================================
+  // TIMEZONE (app publishes the phone's own UTC offset)
+  // ==================================================
+  if (topicStr == topicTimeSet) {
+    StaticJsonDocument<256> doc;
+    DeserializationError error = deserializeJson(doc, message);
+    if (error) {
+      Serial.print("JSON parse error: ");
+      Serial.println(error.c_str());
+      return;
+    }
+    if (doc["tz_offset_minutes"].isNull()) return;
+
+    long newOffset = doc["tz_offset_minutes"] | (long)tzOffsetMin;
+    if (newOffset < -12L * 60L || newOffset > 14L * 60L) {
+      Serial.print("Ignoring implausible tz offset: ");
+      Serial.println(newOffset);
+      return;
+    }
+    if (newOffset == (long)tzOffsetMin) return;
+
+    // The RTC keeps LOCAL time, so when the offset changes the wall clock it
+    // is showing changes by the same delta - step it right away instead of
+    // waiting hours for the next NTP sync.
+    long deltaSec = (newOffset - (long)tzOffsetMin) * 60L;
+    tzOffsetMin = (int)newOffset;
+    prefs.putInt(TZ_OFFSET_KEY, tzOffsetMin);
+    Serial.print("Timezone updated from app -> UTC");
+    Serial.print(tzOffsetMin >= 0 ? "+" : "-");
+    Serial.print(abs(tzOffsetMin) / 60);
+    Serial.print(":");
+    if (abs(tzOffsetMin) % 60 < 10) Serial.print("0");
+    Serial.println(abs(tzOffsetMin) % 60);
+    if (rtcOk) {
+      rtc.adjust(DateTime((uint32_t)((int64_t)rtc.now().unixtime() + deltaSec)));
+    }
+    if (WiFi.status() == WL_CONNECTED) syncRtcFromNtp();
+    return;
+  }
+
+  // ==================================================
   // ALARM STOP (caregiver only)
   // ==================================================
   if (topicStr == topicAlarmStop) {
-    if (displayState == MEDICINE_REMINDER || displayState == EMERGENCY_TAKEN) {
+    if (displayState == WRONG_DOSE_ALERT) {
+      Serial.println("Wrong-bay warning stopped by caregiver");
+      int stoppedBay = wrongBaySensor;
+      setBuzzer(false);
+      turnOffAllLEDs();
+      if (stoppedBay >= 0) publishEvent("caregiver_stopped", stoppedBay + 1);
+      wrongBaySensor = -1;
+      wrongBayRestMm = -1;
+      wrongBayReturnReadings = 0;
+      // A reminder the warning interrupted stays stopped too: the caregiver
+      // asked for silence, not for the reminder to resume buzzing.
+      displayState = MAIN_SCREEN;
+      activeReminder = -1;
+      lcd.clear();
+    } else if (displayState == MEDICINE_REMINDER || displayState == EMERGENCY_TAKEN) {
       Serial.println("Alarm stopped by caregiver");
 
       // activeReminder is -1 during an emergency, so doseSensor[-1] would
@@ -938,6 +1211,23 @@ void publishEvent(const char* eventType, int sensorNumber) {
 }
 
 // ======================================================
+// PUBLISH CURRENT ALARM STATE
+// ======================================================
+// Re-publish the alarm the box is currently showing, right after (re)connect.
+// Only live states are published - a quiet box publishes nothing, which is
+// exactly the signal the app needs to drop a stale banner restored from the
+// database.
+void publishCurrentAlarmState() {
+  if (displayState == MEDICINE_REMINDER && activeReminder >= 0 && activeReminder < 6) {
+    publishEvent("reminder_started", doseSensor[activeReminder] + 1);
+  } else if (displayState == WRONG_DOSE_ALERT && wrongBaySensor >= 0) {
+    publishEvent("wrong_bay_taken", wrongBaySensor + 1);
+  } else if (displayState == EMERGENCY_TAKEN) {
+    publishEvent("emergency_taken", 7);
+  }
+}
+
+// ======================================================
 // UNIX TIME
 // Real wall-clock epoch so the app stores correct event dates.
 // Falls back to NTP/millis time if NTP has not synced yet.
@@ -945,16 +1235,19 @@ void publishEvent(const char* eventType, int sensorNumber) {
 time_t nowUnix() {
   time_t t = time(nullptr);
   if (t < 1700000000UL) {
-    if (rtcOk) return rtc.now().unixtime();
+    // The RTC holds LOCAL wall-clock time, but the app parses this field as a
+    // UTC epoch. Publishing it raw shifted every event in the app's feed by
+    // the whole timezone offset, so convert back to real UTC here.
+    if (rtcOk) return (time_t)(rtc.now().unixtime() - tzOffsetSec());
     return (time_t)0;
   }
   return t;
 }
 
 void syncRtcFromNtp() {
-  // Sync on LOCAL time (see TIMEZONE_OFFSET_SEC) so dose times entered in the
+  // Sync on LOCAL time (see tzOffsetSec) so dose times entered in the
   // app line up with the box's wall clock.
-  configTime(TIMEZONE_OFFSET_SEC, 0, "pool.ntp.org", "time.google.com");
+  configTime(tzOffsetSec(), 0, "pool.ntp.org", "time.google.com");
   struct tm tmv;
   if (getLocalTime(&tmv, 5000)) {
     if (rtcOk) {
@@ -1059,56 +1352,152 @@ void displayMedicineTaken() {
   print12HourTime(doseHour[nextDose], doseMinute[nextDose]);
 }
 
-int detectWrongBayRemoval() {
+// ======================================================
+// IS PICKING THIS BAY UP EXPECTED RIGHT NOW?
+// ======================================================
+// True while a removal of this bay is ALLOWED: its own dose is either not yet
+// due but within WRONG_BAY_EARLY_TOLERANCE_MIN minutes, or already due and
+// still inside the reminder catch-up window (the reminder simply has not
+// started yet this sweep).
+//
+// This replaces the old "wait two minutes before warning" grace. The grace had
+// to be long enough to cover someone grabbing their medicine a little early,
+// which in turn meant a genuine wrong-bay removal never warned while the
+// container was in hand - and warned long after it was put back, where it
+// looked like a random alarm.
+bool bayHasDoseDueSoon(int bay, const DateTime& now) {
+  long nowMinutes = (long)now.hour() * 60L + (long)now.minute();
+  long lateLimit = (long)(REMINDER_CATCHUP_MS / 60000UL);
+  for (int i = 0; i < 6; i++) {
+    if (!doseEnabled[i] || doseSensor[i] != bay) continue;
+    long due = (long)doseHour[i] * 60L + (long)doseMinute[i];
+    long delta = nowMinutes - due;
+    if (delta >= -WRONG_BAY_EARLY_TOLERANCE_MIN && delta <= lateLimit) return true;
+  }
+  return false;
+}
+
+int detectWrongBayRemoval(const DateTime& now) {
   int distances[6] = {distance1, distance2, distance3, distance4, distance5, distance6};
   int scheduledBay = (activeReminder >= 0 && activeReminder < 6) ? doseSensor[activeReminder] : -1;
 
-  // A bay is only called a wrong-time pickup if it stays removed for 2 minutes.
-  // This gives the scheduled pickup logic time to confirm a correct dose and
-  // prevents a correct pickup from causing a second warning after the LCD returns.
-  const int WRONG_BAY_CONFIRM_READINGS = 2;
-  const int WRONG_BAY_REMOVE_MARGIN_MM = 25;
+  const int WRONG_BAY_CONFIRM_READINGS = 3;
 
   for (int bay = 0; bay < 6; bay++) {
     if (!isSensorOk(bay)) {
-      wrongBayRemoveReadings[bay] = 0;
-      wrongBayRemovalPending[bay] = false;
-      continue;
-    }
-
-    // Never classify the currently scheduled compartment as a wrong bay.
-    if (bay == scheduledBay || displayState == MEDICINE_TAKEN) {
-      wrongBayRemoveReadings[bay] = 0;
-      wrongBayRemovalPending[bay] = false;
+      clearWrongBayRemoval(bay);
+      wrongBayOccupiedSince[bay] = 0;
+      wrongBayOccupiedMiss[bay] = 0;
       continue;
     }
 
     int d = distances[bay];
     bool valid = isValidDistance(d);
 
-    // Learn each bay's occupied/resting distance independently (important for S6).
-    if (valid && wrongBayOccupiedDistance[bay] < 0) {
-      wrongBayOccupiedDistance[bay] = d;
+    // Track how long this bay has CONTINUOUSLY looked like it is holding a
+    // dose. Arming from sustained occupancy instead of from the first sample
+    // is what keeps an EMPTY compartment (floor far away, reading noisy)
+    // from ever warning by itself. The shared presence rule extends the
+    // absolute 90mm line with the bay's own learned baseline, so a bay whose
+    // medicine rests at 91-150mm (S6 on some units) still registers as
+    // occupied and can arm at all.
+    if (bayLooksPresent(bay, d, valid)) {
+      wrongBayOccupiedMiss[bay] = 0;
+      if (wrongBayOccupiedSince[bay] == 0) wrongBayOccupiedSince[bay] = millis();
+    } else if (++wrongBayOccupiedMiss[bay] >= WRONG_BAY_OCC_CONFIRM) {
+      wrongBayOccupiedMiss[bay] = 0;
+      wrongBayOccupiedSince[bay] = 0;
+    }
+
+    // Sticky: once a bay has held a dose long enough it stays armed until the
+    // warning fires or the dose is confirmed. It must NOT disarm the moment
+    // the bay looks empty, because that is exactly the removal we are hunting.
+    if (!wrongBayArmed[bay] && wrongBayOccupiedDistance[bay] >= 0 &&
+        wrongBayOccupiedSince[bay] != 0 &&
+        millis() - wrongBayOccupiedSince[bay] >= WRONG_BAY_ARM_MS) {
       wrongBayArmed[bay] = true;
-      wrongBayRemoveReadings[bay] = 0;
-      wrongBayRemovalPending[bay] = false;
+      Serial.print("S");
+      Serial.print(bay + 1);
+      Serial.println(" armed for wrong-pickup detection");
+    }
+
+    // Never classify the currently scheduled compartment - or one whose own
+    // dose is due around now - as a wrong bay.
+    if (bay == scheduledBay || displayState == MEDICINE_TAKEN ||
+        bayHasDoseDueSoon(bay, now)) {
+      clearWrongBayRemoval(bay);
       continue;
     }
 
-    // A closer reading means the compartment has been restored / occupied.
-    // Cancel the two-minute pending warning and refresh its baseline.
-    if (valid && wrongBayOccupiedDistance[bay] >= 0 &&
-        d < wrongBayOccupiedDistance[bay] - WRONG_BAY_REMOVE_MARGIN_MM) {
-      wrongBayOccupiedDistance[bay] = d;
-      wrongBayArmed[bay] = true;
-      wrongBayRemoveReadings[bay] = 0;
-      wrongBayRemovalPending[bay] = false;
-      continue;
+    // Learn each bay's occupied/resting distance independently (important for
+    // S6). Several agreeing samples are required: adopting the first sample
+    // meant one short glitch became the reference, after which every honest
+    // reading looked "removed" and the box alarmed with nothing touched.
+    if (wrongBayOccupiedDistance[bay] < 0) {
+      if (!valid) {
+        wrongBayLearnReadings[bay] = 0;
+        wrongBayLearnValue[bay] = -1;
+      } else if (wrongBayLearnValue[bay] < 0) {
+        wrongBayLearnValue[bay] = d;
+        wrongBayLearnReadings[bay] = 1;
+      } else if (d < wrongBayLearnValue[bay] - WRONG_BAY_BASELINE_TOL_MM) {
+        // Clearly closer: a better resting candidate, so restart and let the
+        // baseline converge on the closest sustained reading. A FAR sample is
+        // an outlier (noise or a brief loss of target) and is ignored
+        // instead of restarting - restarting on every far sample is what let
+        // a flaky sensor (S6 on some units) never finish learning, never
+        // arm, and never warn at all.
+        wrongBayLearnValue[bay] = d;
+        wrongBayLearnReadings[bay] = 1;
+      } else if (d <= wrongBayLearnValue[bay] + WRONG_BAY_BASELINE_TOL_MM) {
+        if (d < wrongBayLearnValue[bay]) wrongBayLearnValue[bay] = d;
+        wrongBayLearnReadings[bay]++;
+        if (wrongBayLearnReadings[bay] >= WRONG_BAY_BASELINE_CONFIRM) {
+          wrongBayOccupiedDistance[bay] = wrongBayLearnValue[bay];
+          wrongBayLearnReadings[bay] = 0;
+          wrongBayLearnValue[bay] = -1;
+          clearWrongBayRemoval(bay);
+          Serial.print("S");
+          Serial.print(bay + 1);
+          Serial.print(" resting baseline learned at ");
+          Serial.print(wrongBayOccupiedDistance[bay]);
+          Serial.println("mm");
+        }
+      }
+      // else: d is a far outlier above the candidate - ignore it entirely.
+      continue; // no baseline yet -> nothing to compare a removal against
     }
 
+    // A sustained closer reading means the compartment has been restored - or
+    // that an empty bay has just been loaded. Adopt it only after it holds for
+    // a few sweeps, so one dip cannot redefine the bay. (Arming that freshly
+    // loaded bay is handled by the sustained-occupancy rule above.)
+    bool bayLooksOccupiedNow =
+        valid && d <= MEDICINE_THRESHOLD &&
+        wrongBayOccupiedDistance[bay] > MEDICINE_THRESHOLD;
+    if (valid && (bayLooksOccupiedNow ||
+                  d < wrongBayOccupiedDistance[bay] - WRONG_BAY_REMOVE_MARGIN_MM)) {
+      wrongBayCloserReadings[bay]++;
+      if (wrongBayCloserReadings[bay] >= WRONG_BAY_BASELINE_CONFIRM) {
+        wrongBayOccupiedDistance[bay] = d;
+        clearWrongBayRemoval(bay);
+        Serial.print("S");
+        Serial.print(bay + 1);
+        Serial.print(" baseline re-learned at ");
+        Serial.print(wrongBayOccupiedDistance[bay]);
+        Serial.println("mm");
+      }
+      continue; // while it settles, it is neither removal nor drift
+    }
+    wrongBayCloserReadings[bay] = 0;
+
+    // Removed = the bay lost its target entirely, or it reads clearly past the
+    // baseline AND past the same 90mm "there is nothing here" threshold the
+    // dose confirmation uses. The absolute floor is what stops a low baseline
+    // (learned from a glitch) from turning ordinary readings into a removal.
     bool looksRemoved = !valid ||
-        (wrongBayOccupiedDistance[bay] >= 0 &&
-         d > wrongBayOccupiedDistance[bay] + WRONG_BAY_REMOVE_MARGIN_MM);
+        (d > wrongBayOccupiedDistance[bay] + WRONG_BAY_REMOVE_MARGIN_MM &&
+         d > MEDICINE_THRESHOLD);
 
     if (wrongBayArmed[bay] && looksRemoved) {
       wrongBayRemoveReadings[bay]++;
@@ -1118,23 +1507,30 @@ int detectWrongBayRemoval() {
           wrongBayRemovalStart[bay] = millis();
           Serial.print("Unexpected removal detected on S");
           Serial.print(bay + 1);
-          Serial.println("; waiting 2 minutes before warning.");
+          Serial.print("; warning in ");
+          Serial.print(WRONG_BAY_DELAY_MS / 1000);
+          Serial.println("s if it stays out.");
         }
         if (millis() - wrongBayRemovalStart[bay] >= WRONG_BAY_DELAY_MS) {
-          wrongBayArmed[bay] = false;
-          wrongBayOccupiedDistance[bay] = -1;
-          wrongBayRemoveReadings[bay] = 0;
-          wrongBayRemovalPending[bay] = false;
+          // Capture the resting baseline before the reset drops it: return
+          // detection needs it for the whole alert (an S6-style bay whose
+          // medicine sits beyond the absolute 90mm threshold would otherwise
+          // never look "present" again and the warning could never clear).
+          wrongBayRestMm = wrongBayOccupiedDistance[bay];
+          wrongBayReturnReadings = 0;
+          resetWrongBayState(bay);
           return bay;
         }
       }
     } else {
-      wrongBayRemoveReadings[bay] = 0;
-      wrongBayRemovalPending[bay] = false;
-      // Track small downward drift only; never follow rising readings.
-      if (valid && wrongBayOccupiedDistance[bay] >= 0 &&
-          d < wrongBayOccupiedDistance[bay]) {
-        wrongBayOccupiedDistance[bay] = d;
+      clearWrongBayRemoval(bay);
+      // This branch only runs while the bay still looks occupied (within the
+      // margin of its baseline), so a lower sample here is small drift. Smooth
+      // it instead of assigning it, otherwise one dip shifts the baseline and
+      // the very next normal reading starts a false removal.
+      if (valid && d < wrongBayOccupiedDistance[bay]) {
+        wrongBayOccupiedDistance[bay] =
+            (wrongBayOccupiedDistance[bay] * 7 + d) / 8;
       }
     }
   }
@@ -1207,6 +1603,7 @@ void setup() {
   topicStatus      = String("carecube/") + deviceId + "/status";
   topicEvent       = String("carecube/") + deviceId + "/event";
   topicAlarmStop   = String("carecube/") + deviceId + "/alarm/stop";
+  topicTimeSet     = String("carecube/") + deviceId + "/time/set";
 
   connectWiFi();
 
@@ -1372,6 +1769,8 @@ void setup() {
   Serial.println(topicEvent);
   Serial.print("  Alarm:    ");
   Serial.println(topicAlarmStop);
+  Serial.print("  Time:     ");
+  Serial.println(topicTimeSet);
 }
 
 // ======================================================
@@ -1441,11 +1840,38 @@ void loop() {
   // Detect an unexpected pickup from a different medicine bay.
   if (!emergencyTriggered && displayState != MEDICINE_TAKEN &&
       displayState != EMERGENCY_TAKEN && displayState != WRONG_DOSE_ALERT) {
-    int wrongBay = detectWrongBayRemoval();
+    int wrongBay = detectWrongBayRemoval(now);
     if (wrongBay >= 0) {
       startWrongBayAlert(wrongBay);
       serviceBuzzer();
       return;
+    }
+  }
+
+  // ====================================================
+  // WRONG-BAY CONTAINER RETURNED
+  // ====================================================
+  // Runs in EVERY state, including after the warning's safety timeout ended
+  // the box-side buzzer while the phone alarm is still up: three consecutive
+  // "present" readings end the warning immediately and publish
+  // wrong_bay_returned so the phone clears its alarm and banner the moment
+  // the container is put back.
+  if (wrongBaySensor >= 0) {
+    if (wrongBayLooksPresentNow()) {
+      if (++wrongBayReturnReadings >= WRONG_BAY_RETURN_CONFIRM) {
+        publishEvent("wrong_bay_returned", wrongBaySensor + 1);
+        Serial.print("Wrong-bay container returned to S");
+        Serial.println(wrongBaySensor + 1);
+        if (displayState == WRONG_DOSE_ALERT) {
+          endWrongBayAlert();
+        } else {
+          wrongBaySensor = -1;
+          wrongBayRestMm = -1;
+          wrongBayReturnReadings = 0;
+        }
+      }
+    } else {
+      wrongBayReturnReadings = 0;
     }
   }
 
@@ -1491,13 +1917,22 @@ void loop() {
     }
 
     // Removal = lost the target, or a valid reading clearly past the resting
-    // distance. Debounced so one stray sample cannot fire the alarm.
+    // distance. Debounced by count AND by time: a burst of bad samples arrives
+    // in well under a second, and an emergency alarm cannot clear itself by
+    // timer - only by putting the container back - so a glitch burst used to
+    // leave the box ringing with nothing taken.
     if (emergencyRestMm >= 0) {
       bool removed = s7NoTarget ||
                      (s7Valid && distance7 > emergencyRestMm + EMERGENCY_REMOVE_MARGIN_MM);
-      emergencyRemoveReadings = removed ? emergencyRemoveReadings + 1 : 0;
+      if (removed) {
+        if (emergencyRemoveReadings == 0) emergencyRemoveStart = millis();
+        emergencyRemoveReadings++;
+      } else {
+        emergencyRemoveReadings = 0;
+      }
 
-      if (emergencyRemoveReadings >= REQUIRED_TAKEN_READINGS) {
+      if (emergencyRemoveReadings >= REQUIRED_TAKEN_READINGS &&
+          millis() - emergencyRemoveStart >= EMERGENCY_REMOVE_CONFIRM_MS) {
         emergencyTriggered = true;
         emergencyRemoveReadings = 0;
         emergencyCloserReadings = 0;
@@ -1575,7 +2010,17 @@ void loop() {
       doseTriggered[i] = true;
       displayState = MEDICINE_REMINDER;
       takenReadingCount = 0;
-      baySeenOccupied = false;
+      // Snapshot the scheduled bay's learned baseline and seed occupancy
+      // from the current reading. Without this, a bay whose medicine sits at
+      // 91-150mm (above the fixed 90mm line) never counted as occupied and
+      // the pickup had to wait out the whole empty-bay grace - "the right
+      // medicine does not clear the alarm instantly".
+      schedRestMm = (doseSensor[i] >= 0 && doseSensor[i] < 6)
+                        ? wrongBayOccupiedDistance[doseSensor[i]]
+                        : -1;
+      int dNow = getSensorDistance(doseSensor[i]);
+      baySeenOccupied = isSensorOk(doseSensor[i]) && isValidDistance(dNow) &&
+          bayLooksPresent(doseSensor[i], dNow, true);
       reminderStartTime = millis();
       lastReminderRepublish = millis();
 
@@ -1612,7 +2057,15 @@ void loop() {
     // raw samples is what let the box declare "MEDICINE TAKEN" on its own
     // and switch the buzzer off while the dose was still in the bay.
     bool readingOk = isSensorOk(sensorNumber) && isValidDistance(activeDistance);
-    bool doseRemoved = readingOk && activeDistance > MEDICINE_THRESHOLD;
+    // "Removed" must clear BOTH the absolute 90mm line AND the bay's own
+    // learned resting distance (when one was captured at reminder start). A
+    // bay whose medicine sits at 91-150mm used to read as removed while
+    // still fully loaded, so the alarm silenced itself 3 readings after it
+    // started. The extra condition can only make removal HARDER to confirm -
+    // never easier - so a genuine pickup still clears at least as fast as
+    // it did before.
+    bool doseRemoved = readingOk && activeDistance > MEDICINE_THRESHOLD &&
+        (schedRestMm <= 0 || activeDistance > schedRestMm + WRONG_BAY_REMOVE_MARGIN_MM);
 
     if (readingOk && !doseRemoved) baySeenOccupied = true;
 
@@ -1635,10 +2088,17 @@ void loop() {
       // 30-second MEDICINE TAKEN screen ends, the empty bay could be mistaken
       // for a wrong-time pickup and trigger a second warning.
       if (sensorNumber >= 0 && sensorNumber < 6) {
-        wrongBayArmed[sensorNumber] = false;
-        wrongBayOccupiedDistance[sensorNumber] = -1;
-        wrongBayRemoveReadings[sensorNumber] = 0;
-        wrongBayRemovalPending[sensorNumber] = false;
+        resetWrongBayState(sensorNumber);
+      }
+      // If the wrong-bay warning is outstanding for THIS bay (its container
+      // was grabbed inside the reminder's own due window), taking the
+      // correct dose resolves it: tell the phone so its alarm and banner
+      // clear too.
+      if (wrongBaySensor == sensorNumber) {
+        publishEvent("wrong_bay_returned", sensorNumber + 1);
+        wrongBaySensor = -1;
+        wrongBayRestMm = -1;
+        wrongBayReturnReadings = 0;
       }
 
       displayState = MEDICINE_TAKEN;
@@ -1666,11 +2126,18 @@ void loop() {
   }
 
   // ====================================================
-  // WRONG-BAY WARNING: play its distinct pattern for 10 seconds, then
-  // return to the screen/state that was active before the warning. This state
-  // is entered only after an unexpected bay has remained removed for 2 minutes.
+  // WRONG-BAY WARNING
+  // ====================================================
+  // Rings with its distinct pattern while the container stays out. The
+  // warning ends the MOMENT the container is put back (return check above)
+  // or the interrupted reminder's dose is confirmed - never on a timer.
+  // WRONG_BAY_ALERT_TIME is only a safety timeout for a container carried
+  // away entirely: it silences the box's own buzzer but leaves wrongBaySensor
+  // set, so return detection (and the phone alarm it clears) keeps running.
   if (displayState == WRONG_DOSE_ALERT) {
     setBuzzerMode(BUZZER_MODE_WRONG_BAY);
+    if (wrongBaySensor >= 0) turnOnLED(wrongBaySensor);
+
     if (millis() - lastLCDUpdate >= 500) {
       lastLCDUpdate = millis();
       lcd.setCursor(0, 0); lcd.print(" WARNING: WRONG BAY ");
@@ -1678,14 +2145,60 @@ void loop() {
       lcd.setCursor(0, 2); lcd.print("Sensor "); lcd.print(wrongBaySensor + 1); lcd.print("           ");
       lcd.setCursor(0, 3); lcd.print("Check dose schedule!");
     }
+
+    // Taking the RIGHT medicine must not be blocked by this warning: keep
+    // evaluating the interrupted reminder's pickup so a confirmed pickup
+    // silences everything at once instead of hanging until the warning ends.
+    if (activeReminder >= 0 && activeReminder < 6) {
+      int sensorNumber = doseSensor[activeReminder];
+      int activeDistance = getSensorDistance(sensorNumber);
+      bool readingOk = isSensorOk(sensorNumber) && isValidDistance(activeDistance);
+      bool doseRemoved = readingOk && activeDistance > MEDICINE_THRESHOLD &&
+          (schedRestMm <= 0 || activeDistance > schedRestMm + WRONG_BAY_REMOVE_MARGIN_MM);
+      if (readingOk && !doseRemoved) baySeenOccupied = true;
+      if (doseRemoved) takenReadingCount++;
+      else takenReadingCount = 0; // must be consecutive
+
+      bool sawPickup = baySeenOccupied ||
+          millis() - reminderStartTime >= TAKEN_EMPTY_BAY_GRACE;
+      if (readingOk && sawPickup && takenReadingCount >= REQUIRED_TAKEN_READINGS) {
+        int returnedBay = wrongBaySensor;
+        if (returnedBay >= 0) {
+          publishEvent("wrong_bay_returned", returnedBay + 1);
+        }
+        endWrongBayAlert(); // restores the reminder screen + normal buzzer
+        setBuzzerMode(BUZZER_MODE_OFF);
+        if (sensorNumber >= 0 && sensorNumber < 6) {
+          resetWrongBayState(sensorNumber);
+        }
+        displayState = MEDICINE_TAKEN;
+        messageStartTime = millis();
+        takenReadingCount = 0;
+        publishEvent("taken", sensorNumber + 1);
+        lcd.clear();
+        Serial.print("SENSOR ");
+        Serial.print(sensorNumber + 1);
+        Serial.println(" -> MEDICINE TAKEN (during wrong-bay warning)");
+        serviceBuzzer();
+        return;
+      }
+    }
+
     serviceBuzzer();
     if (millis() - wrongAlertStartTime >= WRONG_BAY_ALERT_TIME) {
       setBuzzerMode(wrongAlertReturnState == MEDICINE_REMINDER ? BUZZER_MODE_NORMAL_DOSE : BUZZER_MODE_OFF);
-      turnOffAllLEDs();
+      if (wrongAlertReturnState == MEDICINE_REMINDER && activeReminder >= 0) {
+        turnOnLED(doseSensor[activeReminder]);
+      } else {
+        turnOffAllLEDs();
+      }
       displayState = wrongAlertReturnState;
-      wrongBaySensor = -1;
+      wrongAlertReturnState = MAIN_SCREEN;
+      // wrongBaySensor deliberately stays set: the container is still out,
+      // so the phone alarm must keep ringing until it comes back.
       lcd.clear();
       lastLCDUpdate = 0;
+      Serial.println("Wrong-bay warning timed out - waiting for container return");
     }
     return;
   }

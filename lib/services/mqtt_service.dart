@@ -13,6 +13,7 @@ import '../models/medicine_schedule.dart';
 ///
 /// Topic contract (from CareCube_ESP32_Firmware_v2.ino):
 ///   carecube/{device_id}/schedule/set  App -> ESP32  JSON array of slots
+///   carecube/{device_id}/time/set      App -> ESP32  {tz_offset_minutes}
 ///   carecube/{device_id}/status        ESP32 -> App  {temperature,humidity,timestamp}
 ///   carecube/{device_id}/event         ESP32 -> App  {type,sensor_number,timestamp}
 ///   carecube/{device_id}/alarm/stop    App -> ESP32  (caregiver only)
@@ -44,6 +45,7 @@ class MqttService {
   String get _topicStatus => 'carecube/$_deviceId/status';
   String get _topicEvent => 'carecube/$_deviceId/event';
   String get _topicAlarmStop => 'carecube/$_deviceId/alarm/stop';
+  String get _topicTimeSet => 'carecube/$_deviceId/time/set';
 
   Future<bool> connect(String deviceId) async {
     if (isConnected && _deviceId == deviceId) return true;
@@ -91,6 +93,7 @@ class MqttService {
       _client = client;
       _connectionController.add(true);
       _setupSubscriptions();
+      publishTimeZone();
       return true;
     }
 
@@ -167,6 +170,23 @@ class MqttService {
     _publish(_topicScheduleSet, jsonEncode(payload));
   }
 
+  /// Tell the box which UTC offset this phone is on.
+  ///
+  /// Dose times are entered and evaluated as local wall-clock time on both
+  /// sides, so the box has to know the phone's offset or every reminder fires
+  /// shifted (it used to be hard-coded to UTC+05:30). Re-published on every
+  /// connection, resume and schedule push so a box that booted offline still
+  /// picks it up, and so travel/DST changes reach it too.
+  void publishTimeZone() {
+    if (!_isConnected || _deviceId == null) return;
+    _publish(
+      _topicTimeSet,
+      jsonEncode({
+        'tz_offset_minutes': DateTime.now().timeZoneOffset.inMinutes,
+      }),
+    );
+  }
+
   /// Caregiver-only remote alarm stop.
   void stopAlarm() {
     if (!_isConnected || _deviceId == null) return;
@@ -204,6 +224,7 @@ class MqttService {
     print('MQTT connected');
     _isConnected = true;
     _connectionController.add(true);
+    publishTimeZone();
   }
 
   void onDisconnected() {

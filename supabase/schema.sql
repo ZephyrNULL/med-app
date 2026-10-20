@@ -68,7 +68,7 @@ create table public.dose_events (
   id uuid primary key default gen_random_uuid(),
   box_id uuid not null references public.boxes(id) on delete cascade,
   schedule_id uuid references public.schedules(id), -- null for emergency
-  event_type text not null check (event_type in ('reminder_started','taken','missed','emergency_taken','emergency_returned','caregiver_stopped','wrong_bay_taken')),
+  event_type text not null check (event_type in ('reminder_started','taken','missed','emergency_taken','emergency_returned','caregiver_stopped','wrong_bay_taken','wrong_bay_returned')),
   sensor_number int not null check (sensor_number between 1 and 7),
   occurred_at timestamptz default now()
 );

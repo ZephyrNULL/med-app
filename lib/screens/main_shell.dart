@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../services/app_state.dart';
 import '../widgets/active_alarm_banner.dart';
+import '../widgets/wrong_bay_banner.dart';
 import 'home_screen.dart';
 import 'medicine_screen.dart';
 import 'alert_screen.dart';
@@ -41,6 +42,11 @@ class _MainShellState extends State<MainShell> {
           // from the DB cannot keep a phantom banner alive.
           if (repo.showActiveAlarm)
             ActiveAlarmBanner(isCaregiver: appState.isCaregiver),
+          // A wrong-bay warning has its own banner on its own alarm channel,
+          // so it can ring and clear independently of a reminder banner
+          // (both may be up at once: wrong container out, dose due).
+          if (repo.showWrongBayAlarm)
+            WrongBayBanner(isCaregiver: appState.isCaregiver),
           Expanded(
             child: IndexedStack(index: _index, children: _screens),
           ),

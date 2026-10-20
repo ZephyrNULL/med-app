@@ -129,7 +129,23 @@ void main() {
       expect(e.sensorNumber, 3);
       expect(e.isActiveAlarm, isFalse);
       expect(e.isInformational, isTrue);
+      expect(e.isWrongBayAlert, isTrue);
       expect(e.friendlyType, 'Medicine removed from wrong bay');
+    });
+
+    test('wrong_bay_returned is informational and resolves the warning', () {
+      final e = DoseEvent.fromEventJson({
+        'device_id': 'carecube-001',
+        'type': 'wrong_bay_returned',
+        'sensor_number': 3,
+        'timestamp': 1800000000,
+      });
+      expect(e.sensorNumber, 3);
+      expect(e.isActiveAlarm, isFalse);
+      expect(e.isInformational, isTrue);
+      expect(e.isWrongBayResolved, isTrue);
+      expect(e.isWrongBayAlert, isFalse);
+      expect(e.friendlyType, 'Wrong bay medicine returned');
     });
   });
 }

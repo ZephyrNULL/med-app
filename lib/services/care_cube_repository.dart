@@ -63,6 +63,17 @@ class CareCubeRepository extends ChangeNotifier {
   /// instead of any event silencing any alarm.
   int? _activeAlarmBay;
 
+  /// Bay number of the outstanding wrong-bay warning, if any. Kept on a
+  /// SEPARATE channel from [_activeAlarmBay] so a wrong-bay alarm can never
+  /// mask (or be mistaken for) a reminder banner below it in the feed.
+  int? _wrongBayAlertBay;
+
+  /// How long a wrong-bay warning restored from the database may still ring
+  /// for. The box publishes `wrong_bay_taken` when the warning starts and
+  /// `wrong_bay_returned` the moment the container is back, so an older row
+  /// is history, not a live alarm.
+  static const _wrongBayAlarmMaxAge = Duration(minutes: 30);
+
   String? get boxId => _boxId;
   String? get deviceId => _deviceId;
   BoxReading? get latestReading => _latestReading;
@@ -112,15 +123,29 @@ class CareCubeRepository extends ChangeNotifier {
 
   /// The most recent event that actually represents an alarm state: an
   /// active reminder/emergency or a resolution of one. Purely informational
-  /// events (e.g. `wrong_bay_taken`) are skipped, so a wrong-bay warning
+  /// events (the wrong-bay warning pair) are skipped, so a wrong-bay warning
   /// landing on top of an outstanding reminder cannot hide the alarm banner
   /// or make [hasActiveAlarm] report false.
+  ///
+  /// A `reminder_started` with no enabled schedule for its bay is stale
+  /// history (the dose was deleted, or the row predates a reset) - the box
+  /// only ever rings scheduled bays - so it is skipped as well. Without the
+  /// guard, an unresolved row restored from Supabase became a phantom
+  /// "MEDICINE ALARM ACTIVE" banner (and phone ring) the moment the app
+  /// connected, with no schedule anywhere to justify it.
   DoseEvent? get _latestAlarmStateEvent {
     for (final e in _events) {
-      if (!e.isInformational) return e;
+      if (e.isInformational) continue;
+      if (e.type == 'reminder_started' && !_hasEnabledSchedule(e.sensorNumber)) {
+        continue;
+      }
+      return e;
     }
     return null;
   }
+
+  bool _hasEnabledSchedule(int sensorNumber) =>
+      _schedules.any((s) => s.sensorNumber == sensorNumber && s.enabled);
 
   /// True if the most recent alarm-state event is an unacknowledged reminder
   /// or emergency — mirrors the ESP32's MEDICINE_REMINDER / EMERGENCY_TAKEN
@@ -142,6 +167,14 @@ class CareCubeRepository extends ChangeNotifier {
   /// True while the ringing alarm is an emergency (bay 7 taken). Drives the
   /// red "Emergency Taken" banner.
   bool get isEmergencyAlarm => activeAlarmEvent?.type == 'emergency_taken';
+
+  /// True while a wrong-bay warning is live: the box reported one and has
+  /// not yet reported the container back (or the correct dose taken, or a
+  /// caregiver stop). Gated on the box being online, like [showActiveAlarm],
+  /// so a stored row cannot ring for a powered-off box.
+  bool get showWrongBayAlarm => boxOnline && _wrongBayAlertBay != null;
+
+  int? get wrongBayAlertBay => _wrongBayAlertBay;
 
   Future<void> loadForPatient(String patientId) async {
     // Find the patient's box.
@@ -177,6 +210,7 @@ class CareCubeRepository extends ChangeNotifier {
       ..clear()
       ..addAll(events.map(DoseEvent.fromMap));
     _syncActiveAlarmBay();
+    _syncWrongBayAlarm();
 
     final reading = await SupabaseService.fetchLatestReading(boxId);
     _latestReading = reading == null ? null : BoxReading.fromMap(reading);
@@ -200,7 +234,11 @@ class CareCubeRepository extends ChangeNotifier {
         notifyListeners();
         // On (re)connect, re-push the current schedule so the firmware's
         // copy stays in sync even if it was offline when doses changed.
-        if (c && _schedules.isNotEmpty) {
+        // ALWAYS push, even when the list is empty: the firmware boots with
+        // all six bays enabled at hardcoded times, and an empty push is what
+        // disables them. The old `isNotEmpty` guard meant a box with no
+        // schedules ever got told, so it rang phantom alarms all day.
+        if (c) {
           _mqtt.publishSchedule(_schedules);
         }
       }));
@@ -227,7 +265,14 @@ class CareCubeRepository extends ChangeNotifier {
         // banner until the box reports again.
         debugPrint('[repo] box offline - clearing live alarm state');
         _activeAlarmBay = null;
+        _wrongBayAlertBay = null;
         AlarmSoundService().stopAlarm();
+      }
+      if (!_wasOnline && online) {
+        // The box just came back. Anything we published while it was away
+        // (its timezone, most importantly) never reached it.
+        debugPrint('[repo] box online - re-publishing timezone');
+        _mqtt.publishTimeZone();
       }
       _wasOnline = online;
       if (_latestReading != null || _events.isNotEmpty) notifyListeners();
@@ -245,7 +290,8 @@ class CareCubeRepository extends ChangeNotifier {
       debugPrint('Resume refresh failed: $e');
     }
     _scanSchedules();
-    if (showActiveAlarm && !AlarmSoundService().isRinging) {
+    if ((showActiveAlarm || showWrongBayAlarm) &&
+        !AlarmSoundService().isRinging) {
       AlarmSoundService().startAlarm();
     }
   }
@@ -358,13 +404,35 @@ class CareCubeRepository extends ChangeNotifier {
         }
         _lastSynced = DateTime.now();
         notifyListeners();
-        NotificationService().showAlarmNotification(
-          title: 'Medicine in the wrong bay',
-          body: 'The dose in '
-              '${MedicineSchedule.labelForBay(event.sensorNumber)} was '
-              'removed unexpectedly. Please check the schedule.',
-        );
+        if (event.isWrongBayAlert) {
+          NotificationService().showAlarmNotification(
+            title: 'Medicine removed from the wrong bay',
+            body: 'The dose in '
+                '${MedicineSchedule.labelForBay(event.sensorNumber)} was '
+                'removed unexpectedly. Put the container back in the box.',
+          );
+        }
       }
+
+      // The wrong-bay warning runs on its OWN alarm channel: a live warning
+      // rings the phone and shows its banner, and its resolution (container
+      // put back) ends both - but only for that bay, and never while a
+      // reminder/emergency is still ringing (the sound is shared).
+      if (event.isWrongBayAlert) {
+        _wrongBayAlertBay = event.sensorNumber;
+        if (!AlarmSoundService().isRinging) {
+          AlarmSoundService().startAlarm();
+        }
+        notifyListeners();
+      } else if (event.isWrongBayResolved &&
+          _wrongBayAlertBay == event.sensorNumber) {
+        _wrongBayAlertBay = null;
+        if (_activeAlarmBay == null) {
+          AlarmSoundService().stopAlarm();
+        }
+        notifyListeners();
+      }
+
       if (persist && _boxId != null && !isDuplicateInfo) {
         SupabaseService.insertDoseEvent(event.toDbMap(_boxId!))
             .catchError((e) {
@@ -435,9 +503,23 @@ class CareCubeRepository extends ChangeNotifier {
       final stopsCurrentAlarm = _activeAlarmBay == null ||
           _activeAlarmBay == event.sensorNumber ||
           event.type == 'caregiver_stopped';
+
+      // A caregiver stop (any bay) or the correct dose being taken also
+      // resolves an outstanding wrong-bay warning for that bay - the box
+      // publishes `wrong_bay_returned` too, but the local resolution keeps
+      // the phone honest even if that event is delayed or lost.
+      if (event.type == 'caregiver_stopped' ||
+          (event.type == 'taken' && _wrongBayAlertBay == event.sensorNumber)) {
+        _wrongBayAlertBay = null;
+      }
+
       if (stopsCurrentAlarm) {
         _activeAlarmBay = null;
-        AlarmSoundService().stopAlarm();
+        // Silence only when nothing else is still outstanding: a wrong-bay
+        // warning on another bay must keep the phone ringing.
+        if (_wrongBayAlertBay == null) {
+          AlarmSoundService().stopAlarm();
+        }
       }
 
       // The dose is now handled (taken or stopped): its schedule has
@@ -463,6 +545,28 @@ class CareCubeRepository extends ChangeNotifier {
     _activeAlarmBay = activeAlarmEvent?.sensorNumber;
   }
 
+  /// Re-derive the wrong-bay warning from the reloaded feed. Only a RECENT,
+  /// unresolved `wrong_bay_taken` may ring: the box publishes
+  /// `wrong_bay_returned` the moment the container is back, so anything
+  /// older than [_wrongBayAlarmMaxAge] is just history. The feed is
+  /// newest-first, so the first wrong-bay event decides.
+  void _syncWrongBayAlarm() {
+    int? bay;
+    for (final e in _events) {
+      if (e.isWrongBayResolved) {
+        if (bay == e.sensorNumber) bay = null;
+        break;
+      }
+      if (e.isWrongBayAlert) {
+        if (DateTime.now().difference(e.occurredAt) <= _wrongBayAlarmMaxAge) {
+          bay = e.sensorNumber;
+        }
+        break;
+      }
+    }
+    _wrongBayAlertBay = bay;
+  }
+
   /// Reload schedules, events and the latest reading from Supabase.
   /// Used by pull-to-refresh and after pairing.
   Future<void> refreshFromServer() async {
@@ -479,6 +583,7 @@ class CareCubeRepository extends ChangeNotifier {
       ..clear()
       ..addAll(events.map(DoseEvent.fromMap));
     _syncActiveAlarmBay();
+    _syncWrongBayAlarm();
 
     final reading = await SupabaseService.fetchLatestReading(boxId);
     _latestReading = reading == null ? null : BoxReading.fromMap(reading);
@@ -549,6 +654,7 @@ class CareCubeRepository extends ChangeNotifier {
   }
 
   Future<void> _pushScheduleToFirmware() async {
+    _mqtt.publishTimeZone();
     _mqtt.publishSchedule(_schedules);
   }
 
@@ -567,6 +673,9 @@ class CareCubeRepository extends ChangeNotifier {
   /// only path other than actually taking the dose that ends an alarm.
   void caregiverStopAlarm() {
     _mqtt.stopAlarm();
+    // The stop silences the box's wrong-bay warning too (it publishes
+    // caregiver_stopped for that bay), so drop the local state now.
+    _wrongBayAlertBay = null;
 
     final active = activeAlarmEvent;
     if (active != null) {
@@ -609,6 +718,7 @@ class CareCubeRepository extends ChangeNotifier {
     _lastReadingPersistAt = null;
     _localAlarmKeys.clear();
     _activeAlarmBay = null;
+    _wrongBayAlertBay = null;
     _lastReadingAt = null;
     _lastBoxContactAt = null;
     _wasOnline = false;

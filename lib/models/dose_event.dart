@@ -1,7 +1,8 @@
 /// A dose event published by the ESP32 on `carecube/{device_id}/event`.
 ///
 /// types: reminder_started | taken | missed | emergency_taken |
-///        emergency_returned | caregiver_stopped | wrong_bay_taken
+///        emergency_returned | caregiver_stopped | wrong_bay_taken |
+///        wrong_bay_returned
 class DoseEvent {
   final String? id;
   final String? boxId;
@@ -67,6 +68,8 @@ class DoseEvent {
         return 'Alarm stopped by caregiver';
       case 'wrong_bay_taken':
         return 'Medicine removed from wrong bay';
+      case 'wrong_bay_returned':
+        return 'Wrong bay medicine returned';
       default:
         return type;
     }
@@ -75,9 +78,20 @@ class DoseEvent {
   bool get isActiveAlarm =>
       type == 'reminder_started' || type == 'emergency_taken';
 
-  /// True for events that only annotate the feed (a medicine removed from a
-  /// bay that had no dose due). Such events are neither an alarm nor a
-  /// resolution of one: they must never ring or silence the phone, and they
-  /// must not mask an outstanding alarm sitting below them in the feed.
-  bool get isInformational => type == 'wrong_bay_taken';
+  /// True while the box is warning that medicine was removed from a bay with
+  /// no dose due. Drives the phone-side wrong-bay alarm and banner (tracked
+  /// on a separate channel from [isActiveAlarm] so it can never mask a
+  /// reminder banner below it in the feed).
+  bool get isWrongBayAlert => type == 'wrong_bay_taken';
+
+  /// True when that warning has ended: the container was put back, the
+  /// correct dose was taken, or a caregiver stopped it.
+  bool get isWrongBayResolved => type == 'wrong_bay_returned';
+
+  /// True for events that only annotate the feed. Both wrong-bay types are
+  /// included: the warning itself lives on its own alarm channel (see
+  /// [isWrongBayAlert]), and its resolution must not be mistaken for a
+  /// reminder/emergency alarm-state change either. They must never ring as
+  /// a reminder or silence one that sits below them in the feed.
+  bool get isInformational => isWrongBayAlert || isWrongBayResolved;
 }
